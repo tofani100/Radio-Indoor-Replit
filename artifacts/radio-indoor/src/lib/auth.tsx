@@ -8,16 +8,23 @@ const AuthContext = createContext<AuthContextType>({ user: null, isLoading: true
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [authInitialized, setAuthInitialized] = useState(false);
   const { data, isLoading: queryLoading, isError } = useGetMe({
     query: { queryKey: getGetMeQueryKey(), retry: false },
   });
 
   useEffect(() => {
-    if (data) setUser(data as AuthUser);
-    if (isError) setUser(null);
-  }, [data, isError]);
+    if (data) {
+      setUser(data as AuthUser);
+    } else {
+      setUser(null);
+    }
+    if (!queryLoading || isError) {
+      setAuthInitialized(true);
+    }
+  }, [data, queryLoading, isError]);
 
-  const isLoading = queryLoading && !isError;
+  const isLoading = !authInitialized && queryLoading;
 
   return <AuthContext.Provider value={{ user, isLoading, setUser }}>{children}</AuthContext.Provider>;
 }
