@@ -16,7 +16,17 @@ import PlayerPage from "@/pages/player";
 import NotFound from "@/pages/not-found";
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: 1, staleTime: 30000 } },
+  defaultOptions: {
+    queries: {
+      retry: false,
+      staleTime: 30000,
+      throwOnError: false,
+      refetchOnWindowFocus: false,
+    },
+    mutations: {
+      throwOnError: false,
+    },
+  },
 });
 
 function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
