@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
-import { Plus, Pencil, Trash2, ChevronRight, Users, Monitor, Eye, EyeOff, X, Mail } from "lucide-react";
+import { Plus, Pencil, Trash2, ChevronRight, Users, Monitor, Eye, EyeOff, X, Mail, ListMusic, Music } from "lucide-react";
 import {
   useListClients, getListClientsQueryKey,
   useCreateClient, useUpdateClient, useDeleteClient,
+  getGetDashboardSummaryQueryKey, getListPlaylistsQueryKey,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -62,10 +63,38 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
   const [emailError, setEmailError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
 
-  const invalidate = () => { qc.invalidateQueries({ queryKey: getListClientsQueryKey() }); onClose(); };
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: getListClientsQueryKey() });
+    qc.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
+    qc.invalidateQueries({ queryKey: getListPlaylistsQueryKey() });
+    onClose();
+  };
 
-  const create = useCreateClient({ mutation: { onSuccess: () => { toast({ title: "Cliente criado" }); invalidate(); }, onError: () => toast({ title: "Erro ao criar cliente", variant: "destructive" }) } });
-  const update = useUpdateClient({ mutation: { onSuccess: () => { toast({ title: "Cliente atualizado" }); invalidate(); }, onError: () => toast({ title: "Erro ao atualizar", variant: "destructive" }) } });
+  const create = useCreateClient({
+    mutation: {
+      onSuccess: () => {
+        toast({ title: "Cliente criado com sucesso", description: "Playlist principal inicial gerada automaticamente." });
+        invalidate();
+      },
+      onError: (err: any) => {
+        const msg = err?.data?.message || err?.message || "Erro ao criar cliente";
+        toast({ title: "Erro ao criar cliente", description: msg, variant: "destructive" });
+      },
+    },
+  });
+
+  const update = useUpdateClient({
+    mutation: {
+      onSuccess: () => {
+        toast({ title: "Cliente atualizado com sucesso" });
+        invalidate();
+      },
+      onError: (err: any) => {
+        const msg = err?.data?.message || err?.message || "Erro ao atualizar";
+        toast({ title: "Erro ao atualizar", description: msg, variant: "destructive" });
+      },
+    },
+  });
 
   const addEmail = () => {
     const v = emailInput.trim().toLowerCase();
@@ -301,7 +330,7 @@ export default function ClientsPage() {
             {isLoading && [...Array(4)].map((_, i) => (
               <tr key={i}><td colSpan={8} className="px-5 py-4"><div className="h-4 bg-muted animate-pulse rounded" /></td></tr>
             ))}
-            {clients?.map((c) => {
+            {Array.isArray(clients) && clients.map((c) => {
               const totalAuthorized = 1 + ((c as Client).authorizedEmails?.length ?? 0); // master + extras
               return (
               <tr key={c.id} data-testid={`row-client-${c.id}`} className="hover:bg-muted/20 transition-colors">
@@ -329,6 +358,28 @@ export default function ClientsPage() {
                 </td>
                 <td className="px-5 py-4">
                   <div className="flex items-center gap-1 justify-end">
+                    <Link href={`/playlists?clientId=${c.id}`}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Ver playlists deste cliente"
+                        data-testid={`link-client-playlists-${c.id}`}
+                        className="text-muted-foreground hover:text-primary"
+                      >
+                        <ListMusic className="w-4 h-4" />
+                      </Button>
+                    </Link>
+                    <Link href={`/media?clientId=${c.id}`}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Ver mídias deste cliente"
+                        data-testid={`link-client-media-${c.id}`}
+                        className="text-muted-foreground hover:text-purple-600"
+                      >
+                        <Music className="w-4 h-4" />
+                      </Button>
+                    </Link>
                     <Button
                       variant="ghost"
                       size="sm"
@@ -349,17 +400,6 @@ export default function ClientsPage() {
                     >
                       <Trash2 className="w-4 h-4" />
                     </Button>
-                    <Link href={`/clients/${c.id}`}>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        title="Ver detalhes"
-                        data-testid={`link-client-${c.id}`}
-                        className="text-muted-foreground hover:text-foreground"
-                      >
-                        <ChevronRight className="w-4 h-4" />
-                      </Button>
-                    </Link>
                   </div>
                 </td>
               </tr>

@@ -79,7 +79,7 @@ export default function DevicesPage() {
             {isLoading && [...Array(5)].map((_, i) => (
               <tr key={i}><td colSpan={7} className="px-5 py-4"><div className="h-4 bg-muted animate-pulse rounded" /></td></tr>
             ))}
-            {devices?.map((d) => (
+            {Array.isArray(devices) && devices.map((d) => (
               <tr key={d.id} data-testid={`row-device-${d.id}`} className="hover:bg-muted/20 transition-colors">
                 <td className="px-5 py-4">
                   {d.isOnline

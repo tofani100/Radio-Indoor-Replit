@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link } from "wouter";
 import { Plus, ChevronRight, Trash2, ListMusic, Pencil } from "lucide-react";
 import {
@@ -19,16 +19,27 @@ import { ptBR } from "date-fns/locale";
 export default function PlaylistsPage() {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const [clientFilter, setClientFilter] = useState<string>("");
+  const [clientFilter, setClientFilter] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("clientId") || "";
+  });
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null);
   const [editTarget, setEditTarget] = useState<{ id: number; name: string } | null>(null);
   const [editName, setEditName] = useState("");
   const [form, setForm] = useState({ name: "", clientId: "", playbackMode: "sequential" });
 
+  const { data: clients } = useListClients({ query: { queryKey: getListClientsQueryKey() } });
+
+  // If no client is filtered but clients list has items, default to the first client or keep selected
+  useEffect(() => {
+    if (!clientFilter && Array.isArray(clients) && clients.length > 0) {
+      setClientFilter(String(clients[0]!.id));
+    }
+  }, [clients, clientFilter]);
+
   const params = clientFilter ? { clientId: parseInt(clientFilter) } : {};
   const { data: playlists, isLoading } = useListPlaylists(params, { query: { queryKey: getListPlaylistsQueryKey(params), enabled: !!clientFilter } });
-  const { data: clients } = useListClients({ query: { queryKey: getListClientsQueryKey() } });
 
   const inv = () => qc.invalidateQueries({ queryKey: getListPlaylistsQueryKey() });
 
@@ -52,7 +63,7 @@ export default function PlaylistsPage() {
         <Select value={clientFilter} onValueChange={setClientFilter}>
           <SelectTrigger className="w-48" data-testid="select-client-filter"><SelectValue placeholder="Selecione um cliente" /></SelectTrigger>
           <SelectContent>
-            {clients?.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+            {Array.isArray(clients) && clients.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
           </SelectContent>
         </Select>
       </div>
@@ -65,7 +76,7 @@ export default function PlaylistsPage() {
 
       <div className="grid gap-3">
         {isLoading && [...Array(3)].map((_, i) => <div key={i} className="bg-card border border-card-border rounded-xl h-20 animate-pulse" />)}
-        {playlists?.map((p) => (
+        {Array.isArray(playlists) && playlists.map((p) => (
           <div key={p.id} data-testid={`card-playlist-${p.id}`} className="bg-card border border-card-border rounded-xl px-4 py-3 sm:px-5 sm:py-4 flex items-center gap-3">
             <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg bg-primary/10 flex items-center justify-center flex-none">
               <ListMusic className="w-4 h-4 sm:w-5 sm:h-5 text-primary" />
@@ -103,7 +114,7 @@ export default function PlaylistsPage() {
               <Label>Cliente</Label>
               <Select value={form.clientId} onValueChange={(v) => setForm({ ...form, clientId: v })}>
                 <SelectTrigger data-testid="select-client"><SelectValue placeholder="Selecione um cliente" /></SelectTrigger>
-                <SelectContent>{clients?.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent>
+                <SelectContent>{Array.isArray(clients) && clients.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div>

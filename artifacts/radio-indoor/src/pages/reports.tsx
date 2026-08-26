@@ -57,8 +57,8 @@ export default function ReportsPage() {
       </div>
 
       {mode === "sessions"
-        ? <SessionsReport clients={clients ?? []} startDate={startDate} endDate={endDate} setStartDate={setStartDate} setEndDate={setEndDate} />
-        : <MediaReport clients={clients ?? []} startDate={startDate} endDate={endDate} setStartDate={setStartDate} setEndDate={setEndDate} />}
+        ? <SessionsReport clients={Array.isArray(clients) ? clients : []} startDate={startDate} endDate={endDate} setStartDate={setStartDate} setEndDate={setEndDate} />
+        : <MediaReport clients={Array.isArray(clients) ? clients : []} startDate={startDate} endDate={endDate} setStartDate={setStartDate} setEndDate={setEndDate} />}
     </div>
   );
 }
@@ -98,7 +98,7 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
                 <SelectValue placeholder="Selecione um cliente" />
               </SelectTrigger>
               <SelectContent>
-                {clients.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                {Array.isArray(clients) && clients.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -132,14 +132,14 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
             <div className="bg-card border border-card-border rounded-xl px-5 py-4 flex items-center gap-3">
               <Users className="w-5 h-5 text-primary" />
               <div>
-                <p className="text-2xl font-bold text-foreground tabular-nums" data-testid="text-emails-count">{report.emailSummary.length}</p>
+                <p className="text-2xl font-bold text-foreground tabular-nums" data-testid="text-emails-count">{Array.isArray(report.emailSummary) ? report.emailSummary.length : 0}</p>
                 <p className="text-xs text-muted-foreground">Filiais (emails) ativos</p>
               </div>
             </div>
             <div className="bg-card border border-card-border rounded-xl px-5 py-4 flex items-center gap-3">
               <BarChart2 className="w-5 h-5 text-emerald-600" />
               <div>
-                <p className="text-2xl font-bold text-foreground tabular-nums" data-testid="text-sessions-count">{report.sessions.length}</p>
+                <p className="text-2xl font-bold text-foreground tabular-nums" data-testid="text-sessions-count">{Array.isArray(report.sessions) ? report.sessions.length : 0}</p>
                 <p className="text-xs text-muted-foreground">Sessoes registradas</p>
               </div>
             </div>
@@ -147,7 +147,9 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
               <BarChart2 className="w-5 h-5 text-purple-600" />
               <div>
                 <p className="text-2xl font-bold text-foreground tabular-nums" data-testid="text-jingles-count">
-                  {report.emailSummary.reduce((s, e) => s + e.jingles.reduce((x, j) => x + j.plays, 0), 0)}
+                  {Array.isArray(report.emailSummary)
+                    ? report.emailSummary.reduce((s, e) => s + (Array.isArray(e.jingles) ? e.jingles.reduce((x, j) => x + (j.plays || 0), 0) : 0), 0)
+                    : 0}
                 </p>
                 <p className="text-xs text-muted-foreground">Locucoes executadas</p>
               </div>
@@ -172,14 +174,14 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
                 </tr>
               </thead>
               <tbody className="divide-y divide-card-border">
-                {report.emailSummary.length === 0 && (
+                {(!Array.isArray(report.emailSummary) || report.emailSummary.length === 0) && (
                   <tr><td colSpan={5} className="px-5 py-12 text-center text-muted-foreground">Nenhuma execucao registrada nesse periodo</td></tr>
                 )}
-                {report.emailSummary.map((e) => {
+                {Array.isArray(report.emailSummary) && report.emailSummary.map((e) => {
                   const expanded = expandedEmail === e.email;
-                  const totalJingles = e.jingles.reduce((s, j) => s + j.plays, 0);
+                  const totalJingles = Array.isArray(e.jingles) ? e.jingles.reduce((s, j) => s + (j.plays || 0), 0) : 0;
                   return (
-                    <>
+                    <div key={`frag-${e.email}`} style={{ display: "contents" }}>
                       <tr
                         key={`row-${e.email}`}
                         data-testid={`row-email-${e.email}`}
@@ -198,7 +200,7 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
                         <tr key={`exp-${e.email}`} className="bg-muted/10">
                           <td />
                           <td colSpan={4} className="px-5 py-3">
-                            {e.jingles.length === 0 ? (
+                            {(!Array.isArray(e.jingles) || e.jingles.length === 0) ? (
                               <p className="text-xs text-muted-foreground italic">Sem execucao de locucoes neste periodo.</p>
                             ) : (
                               <div className="space-y-1">
@@ -214,7 +216,7 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
                           </td>
                         </tr>
                       )}
-                    </>
+                    </div>
                   );
                 })}
               </tbody>
@@ -242,10 +244,10 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
                 </tr>
               </thead>
               <tbody className="divide-y divide-card-border">
-                {report.sessions.length === 0 && (
+                {(!Array.isArray(report.sessions) || report.sessions.length === 0) && (
                   <tr><td colSpan={7} className="px-5 py-12 text-center text-muted-foreground">Nenhuma sessao no periodo</td></tr>
                 )}
-                {report.sessions.map((s, idx) => (
+                {Array.isArray(report.sessions) && report.sessions.map((s, idx) => (
                   <tr key={idx} data-testid={`row-session-${idx}`} className="hover:bg-muted/20 transition-colors">
                     <td className="px-5 py-2.5 font-mono text-xs text-foreground">{s.email}</td>
                     <td className="px-5 py-2.5 text-muted-foreground text-xs">{format(new Date(s.startedAt), "dd/MM HH:mm:ss", { locale: ptBR })}</td>
@@ -304,7 +306,7 @@ function MediaReport({ clients, startDate, endDate, setStartDate, setEndDate }: 
             <Select value={clientEmail} onValueChange={setClientEmail}>
               <SelectTrigger data-testid="select-client"><SelectValue placeholder="Selecione" /></SelectTrigger>
               <SelectContent>
-                {clients.map((c) => <SelectItem key={c.id} value={c.email}>{c.name}</SelectItem>)}
+                {Array.isArray(clients) && clients.map((c) => <SelectItem key={c.id} value={c.email}>{c.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -323,7 +325,7 @@ function MediaReport({ clients, startDate, endDate, setStartDate, setEndDate }: 
             <Select value={mediaId} onValueChange={setMediaId}>
               <SelectTrigger data-testid="select-media"><SelectValue placeholder="Selecione" /></SelectTrigger>
               <SelectContent>
-                {allMedia?.map((m) => <SelectItem key={m.id} value={String(m.id)}>{m.title}</SelectItem>)}
+                {Array.isArray(allMedia) && allMedia.map((m) => <SelectItem key={m.id} value={String(m.id)}>{m.title}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -363,7 +365,7 @@ function MediaReport({ clients, startDate, endDate, setStartDate, setEndDate }: 
           </thead>
           <tbody className="divide-y divide-card-border">
             {isLoading && [...Array(8)].map((_, i) => <tr key={i}><td colSpan={5} className="px-5 py-4"><div className="h-4 bg-muted animate-pulse rounded" /></td></tr>)}
-            {report?.entries?.map((e) => (
+            {Array.isArray(report?.entries) && report.entries.map((e) => (
               <tr key={e.id} data-testid={`row-log-${e.id}`} className="hover:bg-muted/20 transition-colors">
                 <td className="px-5 py-3 font-medium text-foreground">{e.mediaTitle}</td>
                 <td className="px-5 py-3">

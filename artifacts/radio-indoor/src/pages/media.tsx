@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import { Upload, Trash2, Music, Mic, Filter, CheckSquare, Square, Clock, Loader2, CheckCircle2, XCircle, RotateCw, X } from "lucide-react";
 import {
   useListMedia, getListMediaQueryKey,
@@ -25,7 +25,10 @@ interface UploadItem {
 export default function MediaPage() {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const [clientFilter, setClientFilter] = useState<string>("");
+  const [clientFilter, setClientFilter] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("clientId") || "";
+  });
   const [typeFilter, setTypeFilter] = useState<string>("music");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadClientId, setUploadClientId] = useState<string>("");
@@ -35,12 +38,19 @@ export default function MediaPage() {
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const { data: clients } = useListClients({ query: { queryKey: getListClientsQueryKey() } });
+
+  useEffect(() => {
+    if (!clientFilter && Array.isArray(clients) && clients.length > 0) {
+      setClientFilter(String(clients[0]!.id));
+    }
+  }, [clients, clientFilter]);
+
   const mediaParams: { clientId?: number; type?: "music" | "jingle" } = {};
   if (clientFilter) mediaParams.clientId = parseInt(clientFilter);
   mediaParams.type = typeFilter as "music" | "jingle";
 
   const { data: media, isLoading } = useListMedia(mediaParams, { query: { queryKey: getListMediaQueryKey(mediaParams), enabled: !!clientFilter } });
-  const { data: clients } = useListClients({ query: { queryKey: getListClientsQueryKey() } });
 
   const invalidateMedia = () => qc.invalidateQueries({ queryKey: getListMediaQueryKey() });
 
@@ -196,7 +206,7 @@ export default function MediaPage() {
           <Select value={clientFilter} onValueChange={setClientFilter}>
             <SelectTrigger className="w-44" data-testid="select-client-filter"><SelectValue placeholder="Selecione um cliente" /></SelectTrigger>
             <SelectContent>
-              {clients?.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+              {Array.isArray(clients) && clients.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
@@ -273,7 +283,7 @@ export default function MediaPage() {
           </thead>
           <tbody className="divide-y divide-card-border">
             {isLoading && [...Array(5)].map((_, i) => <tr key={i}><td colSpan={7} className="px-5 py-4"><div className="h-4 bg-muted animate-pulse rounded" /></td></tr>)}
-            {media?.map((m) => {
+            {Array.isArray(media) && media.map((m) => {
               const isChecked = selected.has(m.id);
               return (
                 <tr
@@ -381,7 +391,7 @@ export default function MediaPage() {
               </Label>
               <Select value={uploadClientId} onValueChange={setUploadClientId}>
                 <SelectTrigger data-testid="select-upload-client"><SelectValue placeholder="Selecione um cliente" /></SelectTrigger>
-                <SelectContent>{clients?.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent>
+                <SelectContent>{Array.isArray(clients) && clients.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent>
               </Select>
               {!uploadClientId && (
                 <p className="text-xs text-amber-600 mt-1.5 flex items-center gap-1">

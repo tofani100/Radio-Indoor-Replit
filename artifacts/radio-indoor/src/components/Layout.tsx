@@ -97,7 +97,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           Sair
         </button>
         <div className="mt-2 pt-2 border-t border-sidebar-border/50 text-center">
-          <span className="text-[10px] text-sidebar-foreground/40 font-mono">Radio-Indoor v0.1.0</span>
+          <span className="text-[10px] text-sidebar-foreground/40 font-mono">Radio-Indoor v0.2.1</span>
         </div>
       </div>
     </>

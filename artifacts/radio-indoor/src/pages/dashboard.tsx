@@ -8,7 +8,7 @@ import {
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
-function StatCard({ icon: Icon, label, value, sub, color }: { icon: any; label: string; value: number; sub?: string; color: string }) {
+function StatCard({ icon: Icon, label, value, sub, color }: { icon: any; label: string; value: number | undefined; sub?: string; color: string }) {
   return (
     <div data-testid={`card-${label.toLowerCase().replace(/\s/g, "-")}`} className="bg-card border border-card-border rounded-xl p-5">
       <div className="flex items-start justify-between mb-4">
@@ -16,7 +16,7 @@ function StatCard({ icon: Icon, label, value, sub, color }: { icon: any; label: 
           <Icon className="w-4 h-4" />
         </div>
       </div>
-      <p className="text-3xl font-bold text-foreground tabular-nums">{value.toLocaleString()}</p>
+      <p className="text-3xl font-bold text-foreground tabular-nums">{(value ?? 0).toLocaleString()}</p>
       <p className="text-sm text-muted-foreground mt-0.5">{label}</p>
       {sub && <p className="text-xs text-muted-foreground/60 mt-1">{sub}</p>}
     </div>
@@ -52,7 +52,7 @@ export default function DashboardPage() {
       ) : summary && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <StatCard icon={Users} label="Clientes" value={summary.totalClients} color="bg-blue-500/10 text-blue-600" />
-          <StatCard icon={Monitor} label="Dispositivos Ativos" value={summary.activeDevices} sub={`${summary.pendingDevices} pendentes`} color="bg-primary/10 text-primary" />
+          <StatCard icon={Monitor} label="Dispositivos Ativos" value={summary.activeDevices} sub={`${summary.pendingDevices ?? 0} pendentes`} color="bg-primary/10 text-primary" />
           <StatCard icon={Music} label="Midias" value={summary.totalMedia} color="bg-purple-500/10 text-purple-600" />
           <StatCard icon={Activity} label="Execucoes Hoje" value={summary.totalPlaysToday} color="bg-green-500/10 text-green-600" />
           <StatCard icon={Wifi} label="Online Agora" value={summary.onlineDevices} color="bg-emerald-500/10 text-emerald-600" />
@@ -65,26 +65,27 @@ export default function DashboardPage() {
         <div className="bg-card border border-card-border rounded-xl">
           <div className="flex items-center justify-between px-5 py-4 border-b border-card-border">
             <h2 className="text-sm font-semibold text-foreground">Status dos Dispositivos</h2>
-            <span className="text-xs text-muted-foreground">{deviceStatuses?.length ?? 0} total</span>
+            <span className="text-xs text-muted-foreground">{Array.isArray(deviceStatuses) ? deviceStatuses.length : 0} total</span>
           </div>
           <div className="divide-y divide-card-border max-h-80 overflow-y-auto">
-            {!deviceStatuses?.length && (
+            {(!Array.isArray(deviceStatuses) || deviceStatuses.length === 0) ? (
               <div className="px-5 py-8 text-center text-sm text-muted-foreground">Nenhum dispositivo registrado</div>
+            ) : (
+              deviceStatuses.map((d) => (
+                <div key={d.id} data-testid={`device-status-${d.id}`} className="flex items-center gap-3 px-5 py-3">
+                  <div className={`w-2 h-2 rounded-full flex-none ${d.isOnline ? "bg-emerald-500" : "bg-muted-foreground/30"}`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-foreground truncate">{d.email}</p>
+                    <p className="text-xs text-muted-foreground truncate">{d.clientName ?? "Sem cliente"}</p>
+                  </div>
+                  <div className="text-right">
+                    <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${d.status === "active" ? "bg-emerald-500/10 text-emerald-600" : d.status === "pending" ? "bg-amber-500/10 text-amber-600" : "bg-destructive/10 text-destructive"}`}>
+                      {d.status}
+                    </span>
+                  </div>
+                </div>
+              ))
             )}
-            {deviceStatuses?.map((d) => (
-              <div key={d.id} data-testid={`device-status-${d.id}`} className="flex items-center gap-3 px-5 py-3">
-                <div className={`w-2 h-2 rounded-full flex-none ${d.isOnline ? "bg-emerald-500" : "bg-muted-foreground/30"}`} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-foreground truncate">{d.email}</p>
-                  <p className="text-xs text-muted-foreground truncate">{d.clientName ?? "Sem cliente"}</p>
-                </div>
-                <div className="text-right">
-                  <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${d.status === "active" ? "bg-emerald-500/10 text-emerald-600" : d.status === "pending" ? "bg-amber-500/10 text-amber-600" : "bg-destructive/10 text-destructive"}`}>
-                    {d.status}
-                  </span>
-                </div>
-              </div>
-            ))}
           </div>
         </div>
 
@@ -94,22 +95,23 @@ export default function DashboardPage() {
             <h2 className="text-sm font-semibold text-foreground">Mais Executadas</h2>
           </div>
           <div className="divide-y divide-card-border max-h-80 overflow-y-auto">
-            {!topMedia?.length && (
+            {(!Array.isArray(topMedia) || topMedia.length === 0) ? (
               <div className="px-5 py-8 text-center text-sm text-muted-foreground">Nenhuma execucao registrada</div>
+            ) : (
+              topMedia.map((m, i) => (
+                <div key={m.mediaId} data-testid={`top-media-${m.mediaId}`} className="flex items-center gap-3 px-5 py-3">
+                  <span className="text-xs font-mono text-muted-foreground/60 w-4">{i + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-foreground truncate">{m.title}</p>
+                    {m.artist && <p className="text-xs text-muted-foreground">{m.artist}</p>}
+                  </div>
+                  <div className="text-right flex items-center gap-2">
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${m.type === "music" ? "bg-blue-500/10 text-blue-600" : "bg-purple-500/10 text-purple-600"}`}>{m.type}</span>
+                    <span className="text-sm font-semibold text-foreground tabular-nums">{m.playCount}</span>
+                  </div>
+                </div>
+              ))
             )}
-            {topMedia?.map((m, i) => (
-              <div key={m.mediaId} data-testid={`top-media-${m.mediaId}`} className="flex items-center gap-3 px-5 py-3">
-                <span className="text-xs font-mono text-muted-foreground/60 w-4">{i + 1}</span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-foreground truncate">{m.title}</p>
-                  {m.artist && <p className="text-xs text-muted-foreground">{m.artist}</p>}
-                </div>
-                <div className="text-right flex items-center gap-2">
-                  <span className={`text-xs px-1.5 py-0.5 rounded ${m.type === "music" ? "bg-blue-500/10 text-blue-600" : "bg-purple-500/10 text-purple-600"}`}>{m.type}</span>
-                  <span className="text-sm font-semibold text-foreground tabular-nums">{m.playCount}</span>
-                </div>
-              </div>
-            ))}
           </div>
         </div>
       </div>
@@ -120,25 +122,26 @@ export default function DashboardPage() {
           <h2 className="text-sm font-semibold text-foreground">Atividade Recente</h2>
         </div>
         <div className="divide-y divide-card-border">
-          {!recentActivity?.length && (
+          {(!Array.isArray(recentActivity) || recentActivity.length === 0) ? (
             <div className="px-5 py-8 text-center text-sm text-muted-foreground">Nenhuma atividade recente</div>
+          ) : (
+            recentActivity.map((a) => (
+              <div key={a.id} data-testid={`activity-${a.id}`} className="flex items-center gap-4 px-5 py-3">
+                <Clock className="w-3.5 h-3.5 text-muted-foreground/50 flex-none" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-foreground truncate">
+                    <span className="font-medium">{a.mediaTitle}</span>
+                    <span className="text-muted-foreground"> · {a.clientEmail}</span>
+                  </p>
+                  <p className="text-xs text-muted-foreground truncate font-mono">{a.deviceUuid.substring(0, 12)}...</p>
+                </div>
+                <div className="text-right">
+                  <span className={`text-xs px-1.5 py-0.5 rounded ${a.mediaType === "music" ? "bg-blue-500/10 text-blue-600" : "bg-purple-500/10 text-purple-600"}`}>{a.mediaType}</span>
+                  <p className="text-xs text-muted-foreground mt-0.5">{formatDistanceToNow(new Date(a.playedAt), { addSuffix: true, locale: ptBR })}</p>
+                </div>
+              </div>
+            ))
           )}
-          {recentActivity?.map((a) => (
-            <div key={a.id} data-testid={`activity-${a.id}`} className="flex items-center gap-4 px-5 py-3">
-              <Clock className="w-3.5 h-3.5 text-muted-foreground/50 flex-none" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-foreground truncate">
-                  <span className="font-medium">{a.mediaTitle}</span>
-                  <span className="text-muted-foreground"> · {a.clientEmail}</span>
-                </p>
-                <p className="text-xs text-muted-foreground truncate font-mono">{a.deviceUuid.substring(0, 12)}...</p>
-              </div>
-              <div className="text-right">
-                <span className={`text-xs px-1.5 py-0.5 rounded ${a.mediaType === "music" ? "bg-blue-500/10 text-blue-600" : "bg-purple-500/10 text-purple-600"}`}>{a.mediaType}</span>
-                <p className="text-xs text-muted-foreground mt-0.5">{formatDistanceToNow(new Date(a.playedAt), { addSuffix: true, locale: ptBR })}</p>
-              </div>
-            </div>
-          ))}
         </div>
       </div>
     </div>
