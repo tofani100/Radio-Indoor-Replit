@@ -299,6 +299,21 @@ async function parseSuccessBody(
     return null;
   }
 
+  const mediaType = getMediaType(response.headers);
+
+  // If an API request returns text/html (e.g. Firebase Hosting fallback serving index.html),
+  // this means the backend API server was not reached. Do not treat as valid data.
+  if (mediaType === "text/html" && (requestInfo.url.includes("/api/") || requestInfo.url.startsWith("/api/"))) {
+    throw new ApiError(
+      response,
+      {
+        error: "Backend Unavailable",
+        message: "O servidor de API (backend) não foi alcançado. Configure a URL do backend.",
+      },
+      requestInfo,
+    );
+  }
+
   const effectiveType =
     responseType === "auto" ? inferResponseType(response) : responseType;
 

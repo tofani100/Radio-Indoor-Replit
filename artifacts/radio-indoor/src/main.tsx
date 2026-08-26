@@ -1,7 +1,17 @@
 import { createRoot } from "react-dom/client";
 import { Component, type ReactNode, type ErrorInfo } from "react";
+import { setBaseUrl } from "@workspace/api-client-react";
 import App from "./App";
 import "./index.css";
+
+// Configure API base URL if provided via VITE_API_URL or stored in localStorage
+const storedApiUrl = typeof window !== "undefined" ? localStorage.getItem("radio_indoor_api_url") : null;
+const envApiUrl = import.meta.env.VITE_API_URL;
+if (storedApiUrl) {
+  setBaseUrl(storedApiUrl);
+} else if (envApiUrl) {
+  setBaseUrl(envApiUrl);
+}
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: Error | null }> {
   constructor(props: { children: ReactNode }) {
