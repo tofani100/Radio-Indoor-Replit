@@ -157,6 +157,15 @@ importers:
 
   .:
     devDependencies:
+      '@rollup/rollup-win32-x64-msvc':
+        specifier: ^4.62.5
+        version: 4.62.5
+      '@tailwindcss/oxide-win32-x64-msvc':
+        specifier: ^4.3.3
+        version: 4.3.3
+      lightningcss-win32-x64-msvc:
+        specifier: ^1.33.0
+        version: 1.33.0
       prettier:
         specifier: ^3.8.1
         version: 3.8.1
@@ -2085,6 +2094,11 @@ packages:
     os: [linux]
     libc: [glibc]
 
+  '@rollup/rollup-win32-x64-msvc@4.62.5':
+    resolution: {integrity: sha512-/gDJaRs4gl0NPIwqCz+6PkpmhhjRAD2j6P4rSNHBzUkO3naEx2mIU0pRle1vUNRQ7mE/+8OOeXLTv/J56FKiQg==}
+    cpu: [x64]
+    os: [win32]
+
   '@scalar/helpers@0.2.18':
     resolution: {integrity: sha512-w1d4tpNEVZ293oB2BAgLrS0kVPUtG3eByNmOCJA5eK9vcT4D3cmsGtWjUaaqit0BQCsBFHK51rasGvSWnApYTw==}
     engines: {node: '>=20'}
@@ -2159,6 +2173,12 @@ packages:
       - '@tybys/wasm-util'
       - '@emnapi/wasi-threads'
       - tslib
+
+  '@tailwindcss/oxide-win32-x64-msvc@4.3.3':
+    resolution: {integrity: sha512-yJ0pwIVc/nYeGoV02WtsN8KYyLQv7kyI2wDnkezyJlGGjkd4QLwDGAwl47YpPJeuI0M0ObaXGSPjvWDPeTPggw==}
+    engines: {node: '>= 20'}
+    cpu: [x64]
+    os: [win32]
 
   '@tailwindcss/oxide@4.2.1':
     resolution: {integrity: sha512-yv9jeEFWnjKCI6/T3Oq50yQEOqmpmpfzG1hcZsAOaXFQPfzWprWrlHSdGPEF3WQTi8zu8ohC9Mh9J470nT5pUw==}
@@ -3444,6 +3464,12 @@ packages:
     os: [linux]
     libc: [glibc]
 
+  lightningcss-win32-x64-msvc@1.33.0:
+    resolution: {integrity: sha512-OlEICDx/Xl0FqSp4bry8zFnCvGpig3Gl4gCquvYwHuqJKEC1+n9NgDniFvqHGmMv1ZkqDJrDqKKSykTDX+ehuA==}
+    engines: {node: '>= 12.0.0'}
+    cpu: [x64]
+    os: [win32]
+
   lightningcss@1.31.1:
     resolution: {integrity: sha512-l51N2r93WmGUye3WuFoN5k10zyvrVs0qfKBhyC5ogUQ6Ew6JUSswh78mbSO+IU3nTWsyOArqPCcShdQSadghBQ==}
     engines: {node: '>= 12.0.0'}
@@ -3968,6 +3994,7 @@ packages:
   recharts@2.15.4:
     resolution: {integrity: sha512-UT/q6fwS3c1dHbXv2uFgYJ9BMFHu3fwnd7AYZaEQhXuYQ4hgsxLvsUXzGdKeZrW5xopzDCvuA2N41WJ88I7zIw==}
     engines: {node: '>=14'}
+    deprecated: 1.x and 2.x branches are no longer active. Bump to Recharts v3 to receive latest features and bugfixes. See https://github.com/recharts/recharts/wiki/3.0-migration-guide
     peerDependencies:
       react: ^16.0.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
       react-dom: ^16.0.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
@@ -4303,6 +4330,7 @@ packages:
   tsconfck@3.1.6:
     resolution: {integrity: sha512-ks6Vjr/jEw0P1gmOVwutM3B7fWxoWBL2KRDb1JfqGVawBmO5UsvmWOQFGHBPl5yxYz4eERr19E6L7NMv+Fej4w==}
     engines: {node: ^18 || >=20}
+    deprecated: unmaintained
     hasBin: true
     peerDependencies:
       typescript: ^5.0.0
@@ -6352,6 +6380,8 @@ snapshots:
   '@rollup/rollup-linux-x64-gnu@4.59.0':
     optional: true
 
+  '@rollup/rollup-win32-x64-msvc@4.62.5': {}
+
   '@scalar/helpers@0.2.18': {}
 
   '@scalar/json-magic@0.11.7':
@@ -6433,6 +6463,8 @@ snapshots:
 
   '@tailwindcss/oxide-wasm32-wasi@4.2.1':
     optional: true
+
+  '@tailwindcss/oxide-win32-x64-msvc@4.3.3': {}
 
   '@tailwindcss/oxide@4.2.1':
     optionalDependencies:
@@ -7744,6 +7776,8 @@ snapshots:
 
   lightningcss-linux-x64-gnu@1.31.1:
     optional: true
+
+  lightningcss-win32-x64-msvc@1.33.0: {}
 
   lightningcss@1.31.1:
     dependencies:
