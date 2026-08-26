@@ -117,7 +117,7 @@ export default function LoginPage() {
           </form>
 
           <p className="mt-8 text-center text-xs text-sidebar-foreground/30 font-mono">
-            Radio Indoor &copy; {new Date().getFullYear()} &bull; v0.1.0
+            Radio Indoor &copy; {new Date().getFullYear()} &bull; v0.2.1
           </p>
         </div>
       </div>
