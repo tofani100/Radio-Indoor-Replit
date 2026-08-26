@@ -8,7 +8,7 @@ const AuthContext = createContext<AuthContextType>({ user: null, isLoading: true
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
-  const { data, isLoading, isError } = useGetMe({
+  const { data, isLoading: queryLoading, isError } = useGetMe({
     query: { queryKey: getGetMeQueryKey(), retry: false },
   });
 
@@ -16,6 +16,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (data) setUser(data as AuthUser);
     if (isError) setUser(null);
   }, [data, isError]);
+
+  const isLoading = queryLoading && !isError;
 
   return <AuthContext.Provider value={{ user, isLoading, setUser }}>{children}</AuthContext.Provider>;
 }
