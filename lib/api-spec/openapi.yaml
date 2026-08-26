@@ -1,0 +1,1596 @@
+openapi: 3.1.0
+info:
+  title: Api
+  version: 0.1.0
+  description: Indoor Radio System API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: auth
+    description: Authentication
+  - name: clients
+    description: Client management
+  - name: devices
+    description: Device management
+  - name: media
+    description: Media file management
+  - name: playlists
+    description: Playlist management
+  - name: playback
+    description: Playback queue and logging
+  - name: reports
+    description: Reporting and analytics
+  - name: dashboard
+    description: Dashboard summary
+
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /auth/login:
+    post:
+      operationId: adminLogin
+      tags: [auth]
+      summary: Admin login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginBody"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResult"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/logout:
+    post:
+      operationId: adminLogout
+      tags: [auth]
+      summary: Admin logout
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Get current admin session
+      responses:
+        "200":
+          description: Current session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResult"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /clients:
+    get:
+      operationId: listClients
+      tags: [clients]
+      summary: List all clients
+      responses:
+        "200":
+          description: List of clients
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Client"
+    post:
+      operationId: createClient
+      tags: [clients]
+      summary: Create a client
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateClientBody"
+      responses:
+        "201":
+          description: Client created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+
+  /clients/{clientId}:
+    get:
+      operationId: getClient
+      tags: [clients]
+      summary: Get a client
+      parameters:
+        - name: clientId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Client details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+    put:
+      operationId: updateClient
+      tags: [clients]
+      summary: Update a client
+      parameters:
+        - name: clientId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateClientBody"
+      responses:
+        "200":
+          description: Client updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+    delete:
+      operationId: deleteClient
+      tags: [clients]
+      summary: Delete a client
+      parameters:
+        - name: clientId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /devices/register:
+    post:
+      operationId: registerDevice
+      tags: [devices]
+      summary: Register or identify a device (PWA gatekeeper)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterDeviceBody"
+      responses:
+        "200":
+          description: Device status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceStatus"
+
+  /devices/heartbeat:
+    post:
+      operationId: deviceHeartbeat
+      tags: [devices]
+      summary: Send heartbeat ping from player
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HeartbeatBody"
+      responses:
+        "200":
+          description: Heartbeat received
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /devices:
+    get:
+      operationId: listDevices
+      tags: [devices]
+      summary: List all devices (admin)
+      parameters:
+        - name: clientId
+          in: query
+          schema:
+            type: integer
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, active, blocked]
+      responses:
+        "200":
+          description: List of devices
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Device"
+
+  /devices/{deviceId}/approve:
+    post:
+      operationId: approveDevice
+      tags: [devices]
+      summary: Approve a device
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Device approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+
+  /devices/{deviceId}/block:
+    post:
+      operationId: blockDevice
+      tags: [devices]
+      summary: Block a device
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Device blocked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+
+  /devices/{deviceId}:
+    delete:
+      operationId: deleteDevice
+      tags: [devices]
+      summary: Delete a device
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /media:
+    get:
+      operationId: listMedia
+      tags: [media]
+      summary: List media files
+      parameters:
+        - name: clientId
+          in: query
+          schema:
+            type: integer
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [music, jingle]
+      responses:
+        "200":
+          description: Media list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MediaItem"
+    post:
+      operationId: uploadMedia
+      tags: [media]
+      summary: Upload a media file
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/UploadMediaBody"
+      responses:
+        "201":
+          description: Media uploaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaItem"
+
+  /media/scan-folder:
+    post:
+      operationId: scanFolder
+      tags: [media]
+      summary: Scan a server folder and register found audio files
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScanFolderBody"
+      responses:
+        "200":
+          description: Scan result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanFolderResult"
+
+  /media/batch-delete:
+    post:
+      operationId: deleteMediaBatch
+      tags: [media]
+      summary: Delete multiple media files at once
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mediaIds:
+                  type: array
+                  items:
+                    type: integer
+              required: [mediaIds]
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: integer
+                required: [deleted]
+
+  /media/{mediaId}:
+    get:
+      operationId: getMedia
+      tags: [media]
+      summary: Get media metadata
+      parameters:
+        - name: mediaId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Media item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaItem"
+    delete:
+      operationId: deleteMedia
+      tags: [media]
+      summary: Delete a media file
+      parameters:
+        - name: mediaId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /playlists:
+    get:
+      operationId: listPlaylists
+      tags: [playlists]
+      summary: List playlists
+      parameters:
+        - name: clientId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Playlists
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Playlist"
+    post:
+      operationId: createPlaylist
+      tags: [playlists]
+      summary: Create a playlist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlaylistBody"
+      responses:
+        "201":
+          description: Playlist created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Playlist"
+
+  /playlists/{playlistId}:
+    get:
+      operationId: getPlaylist
+      tags: [playlists]
+      summary: Get a playlist with its items
+      parameters:
+        - name: playlistId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Playlist with items
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistWithItems"
+    put:
+      operationId: updatePlaylist
+      tags: [playlists]
+      summary: Update a playlist
+      parameters:
+        - name: playlistId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePlaylistBody"
+      responses:
+        "200":
+          description: Updated playlist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Playlist"
+    delete:
+      operationId: deletePlaylist
+      tags: [playlists]
+      summary: Delete a playlist
+      parameters:
+        - name: playlistId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /playlists/{playlistId}/items:
+    post:
+      operationId: addPlaylistItem
+      tags: [playlists]
+      summary: Add a media item to a playlist
+      parameters:
+        - name: playlistId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddPlaylistItemBody"
+      responses:
+        "201":
+          description: Item added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaylistItem"
+
+  /playlists/{playlistId}/items/batch:
+    post:
+      operationId: addPlaylistItemsBatch
+      tags: [playlists]
+      summary: Add multiple media items to a playlist at once
+      parameters:
+        - name: playlistId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddPlaylistItemsBatchBody"
+      responses:
+        "201":
+          description: Items added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  added:
+                    type: integer
+                required: [added]
+
+  /playlists/{playlistId}/reorder:
+    put:
+      operationId: reorderPlaylistItems
+      tags: [playlists]
+      summary: Reorder playlist items (drag and drop)
+      parameters:
+        - name: playlistId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReorderItemsBody"
+      responses:
+        "200":
+          description: Reordered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /playlists/{playlistId}/items/{itemId}:
+    delete:
+      operationId: removePlaylistItem
+      tags: [playlists]
+      summary: Remove an item from a playlist
+      parameters:
+        - name: playlistId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: itemId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /playback/playlists:
+    get:
+      operationId: getPlaybackPlaylists
+      tags: [playback]
+      summary: List all active playlists available to the device's client
+      parameters:
+        - name: uuid
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: email
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Available playlists
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PlaylistSummary"
+        "403":
+          description: Device not authorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /playback/queue:
+    get:
+      operationId: getPlaybackQueue
+      tags: [playback]
+      summary: Get the playback queue for the current device
+      parameters:
+        - name: uuid
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: email
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: playlistId
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Optional playlist ID to load. Falls back to the first active playlist if omitted or invalid.
+      responses:
+        "200":
+          description: Playback queue
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaybackQueue"
+        "403":
+          description: Device not authorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /playback/log:
+    post:
+      operationId: logPlayback
+      tags: [playback]
+      summary: Log a completed media playback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogPlaybackBody"
+      responses:
+        "201":
+          description: Log recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /reports/playbacks:
+    get:
+      operationId: getPlaybackReport
+      tags: [reports]
+      summary: Get playback execution report
+      parameters:
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: clientEmail
+          in: query
+          schema:
+            type: string
+        - name: mediaId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Playback report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaybackReport"
+
+  /reports/client-sessions:
+    get:
+      operationId: getClientSessionsReport
+      tags: [reports]
+      summary: Per-client report of player sessions and jingle plays per email
+      parameters:
+        - name: clientId
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Sessions and jingle plays grouped per email
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientSessionsReport"
+
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [dashboard]
+      summary: Get dashboard summary stats
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+
+  /dashboard/device-status:
+    get:
+      operationId: getDeviceStatusOverview
+      tags: [dashboard]
+      summary: Get live device online/offline status
+      responses:
+        "200":
+          description: Device statuses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DeviceStatusOverview"
+
+  /dashboard/top-media:
+    get:
+      operationId: getTopMedia
+      tags: [dashboard]
+      summary: Get top played media
+      responses:
+        "200":
+          description: Top media list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TopMediaItem"
+
+  /dashboard/recent-activity:
+    get:
+      operationId: getRecentActivity
+      tags: [dashboard]
+      summary: Get recent playback activity feed
+      responses:
+        "200":
+          description: Recent activity
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivityItem"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required:
+        - success
+
+    LoginBody:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+      required:
+        - email
+        - password
+
+    AuthResult:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum: [admin]
+      required:
+        - id
+        - email
+        - name
+        - role
+
+    Client:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+        masterEmail:
+          type: string
+        authorizedEmails:
+          type: array
+          items:
+            type: string
+          description: Additional pre-authorized emails for this client. Devices registering with these emails are auto-approved.
+        playbackMode:
+          type: string
+          enum: [sequential, shuffle]
+        jingleMode:
+          type: string
+          enum: [ordered, interval, time]
+        jingleInterval:
+          type: integer
+          description: Play 1 jingle every N music tracks (when jingleMode is "interval")
+        jingleIntervalSeconds:
+          type: integer
+          description: Interrupt music every N seconds to play 1 jingle (when jingleMode is "time")
+        active:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        deviceCount:
+          type: integer
+        mediaCount:
+          type: integer
+      required:
+        - id
+        - name
+        - email
+        - masterEmail
+        - authorizedEmails
+        - playbackMode
+        - jingleMode
+        - active
+        - createdAt
+
+    CreateClientBody:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        masterEmail:
+          type: string
+        authorizedEmails:
+          type: array
+          items:
+            type: string
+        password:
+          type: string
+        playbackMode:
+          type: string
+          enum: [sequential, shuffle]
+        jingleMode:
+          type: string
+          enum: [ordered, interval, time]
+        jingleInterval:
+          type: integer
+        jingleIntervalSeconds:
+          type: integer
+      required:
+        - name
+        - email
+        - masterEmail
+        - password
+
+    UpdateClientBody:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        masterEmail:
+          type: string
+        authorizedEmails:
+          type: array
+          items:
+            type: string
+        playbackMode:
+          type: string
+          enum: [sequential, shuffle]
+        jingleMode:
+          type: string
+          enum: [ordered, interval, time]
+        jingleInterval:
+          type: integer
+        jingleIntervalSeconds:
+          type: integer
+        active:
+          type: boolean
+
+    Device:
+      type: object
+      properties:
+        id:
+          type: integer
+        uuid:
+          type: string
+        email:
+          type: string
+        status:
+          type: string
+          enum: [pending, active, blocked]
+        clientId:
+          type: integer
+        clientName:
+          type: string
+        lastSeen:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        isOnline:
+          type: boolean
+      required:
+        - id
+        - uuid
+        - email
+        - status
+        - createdAt
+        - isOnline
+
+    RegisterDeviceBody:
+      type: object
+      properties:
+        uuid:
+          type: string
+        email:
+          type: string
+      required:
+        - uuid
+        - email
+
+    DeviceStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pending, active, blocked]
+        message:
+          type: string
+        clientId:
+          type: integer
+      required:
+        - status
+        - message
+
+    HeartbeatBody:
+      type: object
+      properties:
+        uuid:
+          type: string
+        email:
+          type: string
+        currentMediaId:
+          type: integer
+      required:
+        - uuid
+        - email
+
+    MediaItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        artist:
+          type: string
+        type:
+          type: string
+          enum: [music, jingle]
+        filename:
+          type: string
+        url:
+          type: string
+        duration:
+          type: number
+          description: Duration in seconds
+        clientId:
+          type: integer
+        gain:
+          type: number
+          description: Volume gain preset (0.0 to 2.0)
+        coverUrl:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - title
+        - type
+        - filename
+        - url
+        - clientId
+        - createdAt
+
+    UploadMediaBody:
+      type: object
+      properties:
+        file:
+          type: string
+          format: binary
+        title:
+          type: string
+        artist:
+          type: string
+        type:
+          type: string
+          enum: [music, jingle]
+        clientId:
+          type: integer
+        gain:
+          type: number
+      required:
+        - file
+        - title
+        - type
+        - clientId
+
+    ScanFolderBody:
+      type: object
+      properties:
+        folderPath:
+          type: string
+        clientId:
+          type: integer
+        type:
+          type: string
+          enum: [music, jingle]
+      required:
+        - folderPath
+        - clientId
+        - type
+
+    ScanFolderResult:
+      type: object
+      properties:
+        found:
+          type: integer
+        imported:
+          type: integer
+        skipped:
+          type: integer
+        files:
+          type: array
+          items:
+            type: string
+      required:
+        - found
+        - imported
+        - skipped
+        - files
+
+    Playlist:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        clientId:
+          type: integer
+        clientName:
+          type: string
+        playbackMode:
+          type: string
+          enum: [sequential, shuffle]
+        itemCount:
+          type: integer
+        active:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - clientId
+        - active
+        - createdAt
+
+    PlaylistWithItems:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        clientId:
+          type: integer
+        playbackMode:
+          type: string
+          enum: [sequential, shuffle]
+        active:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlaylistItem"
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - clientId
+        - active
+        - items
+        - createdAt
+
+    PlaylistItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        playlistId:
+          type: integer
+        mediaId:
+          type: integer
+        position:
+          type: integer
+        media:
+          $ref: "#/components/schemas/MediaItem"
+      required:
+        - id
+        - playlistId
+        - mediaId
+        - position
+
+    CreatePlaylistBody:
+      type: object
+      properties:
+        name:
+          type: string
+        clientId:
+          type: integer
+        playbackMode:
+          type: string
+          enum: [sequential, shuffle]
+      required:
+        - name
+        - clientId
+
+    UpdatePlaylistBody:
+      type: object
+      properties:
+        name:
+          type: string
+        playbackMode:
+          type: string
+          enum: [sequential, shuffle]
+        active:
+          type: boolean
+
+    AddPlaylistItemBody:
+      type: object
+      properties:
+        mediaId:
+          type: integer
+        position:
+          type: integer
+      required:
+        - mediaId
+
+    AddPlaylistItemsBatchBody:
+      type: object
+      properties:
+        mediaIds:
+          type: array
+          items:
+            type: integer
+          description: Array of media IDs to add at the end of the playlist
+      required:
+        - mediaIds
+
+    ReorderItemsBody:
+      type: object
+      properties:
+        itemIds:
+          type: array
+          items:
+            type: integer
+          description: Ordered array of playlist item IDs
+      required:
+        - itemIds
+
+    PlaylistSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        itemCount:
+          type: integer
+      required:
+        - id
+        - name
+        - itemCount
+
+    PlaybackQueue:
+      type: object
+      properties:
+        clientId:
+          type: integer
+        deviceId:
+          type: integer
+        playlistId:
+          type: integer
+          description: The ID of the playlist whose items are in this queue
+        currentIndex:
+          type: integer
+        playbackMode:
+          type: string
+          enum: [sequential, shuffle]
+        jingleMode:
+          type: string
+          enum: [ordered, interval, time]
+        jingleInterval:
+          type: integer
+        jingleIntervalSeconds:
+          type: integer
+        musicVolume:
+          type: number
+        jingleVolume:
+          type: number
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/MediaItem"
+      required:
+        - clientId
+        - deviceId
+        - currentIndex
+        - playbackMode
+        - jingleMode
+        - musicVolume
+        - jingleVolume
+        - items
+
+    LogPlaybackBody:
+      type: object
+      properties:
+        mediaId:
+          type: integer
+        uuid:
+          type: string
+        email:
+          type: string
+        playedAt:
+          type: string
+          format: date-time
+      required:
+        - mediaId
+        - uuid
+        - email
+
+    ClientSessionsReport:
+      type: object
+      properties:
+        clientId:
+          type: integer
+        clientName:
+          type: string
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlayerSession"
+        emailSummary:
+          type: array
+          items:
+            $ref: "#/components/schemas/EmailSessionSummary"
+      required:
+        - clientId
+        - clientName
+        - sessions
+        - emailSummary
+
+    PlayerSession:
+      type: object
+      properties:
+        email:
+          type: string
+        deviceUuid:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+        durationMinutes:
+          type: number
+        jinglePlays:
+          type: integer
+        musicPlays:
+          type: integer
+      required:
+        - email
+        - deviceUuid
+        - startedAt
+        - endedAt
+        - durationMinutes
+        - jinglePlays
+        - musicPlays
+
+    EmailSessionSummary:
+      type: object
+      properties:
+        email:
+          type: string
+        sessionsCount:
+          type: integer
+        totalDurationMinutes:
+          type: number
+        jingles:
+          type: array
+          items:
+            $ref: "#/components/schemas/EmailJingleStat"
+      required:
+        - email
+        - sessionsCount
+        - totalDurationMinutes
+        - jingles
+
+    EmailJingleStat:
+      type: object
+      properties:
+        mediaId:
+          type: integer
+        title:
+          type: string
+        plays:
+          type: integer
+      required:
+        - mediaId
+        - title
+        - plays
+
+    PlaybackReport:
+      type: object
+      properties:
+        totalPlays:
+          type: integer
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlaybackLogEntry"
+      required:
+        - totalPlays
+        - entries
+
+    PlaybackLogEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+        mediaId:
+          type: integer
+        mediaTitle:
+          type: string
+        mediaType:
+          type: string
+          enum: [music, jingle]
+        deviceUuid:
+          type: string
+        clientEmail:
+          type: string
+        playedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - mediaId
+        - mediaTitle
+        - mediaType
+        - deviceUuid
+        - clientEmail
+        - playedAt
+
+    DashboardSummary:
+      type: object
+      properties:
+        totalClients:
+          type: integer
+        activeDevices:
+          type: integer
+        pendingDevices:
+          type: integer
+        totalMedia:
+          type: integer
+        totalPlaysToday:
+          type: integer
+        onlineDevices:
+          type: integer
+        offlineDevices:
+          type: integer
+      required:
+        - totalClients
+        - activeDevices
+        - pendingDevices
+        - totalMedia
+        - totalPlaysToday
+        - onlineDevices
+        - offlineDevices
+
+    DeviceStatusOverview:
+      type: object
+      properties:
+        id:
+          type: integer
+        uuid:
+          type: string
+        email:
+          type: string
+        clientName:
+          type: string
+        isOnline:
+          type: boolean
+        lastSeen:
+          type: string
+          format: date-time
+        currentMedia:
+          type: string
+        status:
+          type: string
+          enum: [pending, active, blocked]
+      required:
+        - id
+        - uuid
+        - email
+        - isOnline
+        - status
+
+    TopMediaItem:
+      type: object
+      properties:
+        mediaId:
+          type: integer
+        title:
+          type: string
+        artist:
+          type: string
+        type:
+          type: string
+          enum: [music, jingle]
+        playCount:
+          type: integer
+      required:
+        - mediaId
+        - title
+        - type
+        - playCount
+
+    ActivityItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        mediaTitle:
+          type: string
+        mediaType:
+          type: string
+          enum: [music, jingle]
+        clientEmail:
+          type: string
+        deviceUuid:
+          type: string
+        playedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - mediaTitle
+        - mediaType
+        - clientEmail
+        - deviceUuid
+        - playedAt

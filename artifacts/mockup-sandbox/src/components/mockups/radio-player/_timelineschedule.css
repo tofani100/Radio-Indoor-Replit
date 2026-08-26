@@ -1,0 +1,32 @@
+/* Scoped styles for TimelineSchedule mockup */
+.radio-timeline-scope {
+  --tl-bg: 0 0% 98%;
+  --tl-surface: 0 0% 100%;
+  --tl-border: 220 13% 91%;
+  --tl-text: 240 5.3% 26.1%;
+  --tl-text-muted: 240 3.8% 46.1%;
+  
+  --tl-music: 221 83% 53%; /* Blue */
+  --tl-music-bg: 221 83% 96%;
+  --tl-jingle: 271 81% 56%; /* Purple */
+  --tl-jingle-bg: 271 81% 96%;
+  
+  --tl-now: 348 83% 47%; /* Red for current time indicator */
+  
+  font-family: 'Inter', sans-serif;
+}
+
+.dark .radio-timeline-scope {
+  --tl-bg: 240 10% 4%;
+  --tl-surface: 240 10% 6%;
+  --tl-border: 240 4% 16%;
+  --tl-text: 0 0% 98%;
+  --tl-text-muted: 240 5% 65%;
+
+  --tl-music: 217 91% 60%;
+  --tl-music-bg: 217 91% 15%;
+  --tl-jingle: 267 100% 65%;
+  --tl-jingle-bg: 267 100% 15%;
+  
+  --tl-now: 348 100% 60%;
+}

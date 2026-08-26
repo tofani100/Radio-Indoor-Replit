@@ -1,0 +1,92 @@
+PRODUCT REQUIREMENTS DOCUMENT (PRD) - SISTEMA DE RÁDIO INDOOR
+1. Visão Geral do Produto
+O objetivo é criar uma aplicação web completa (Frontend + Backend + Banco de Dados) para gestão e reprodução de rádio indoor, estruturando a operação para dezenas de clientes simultâneos. A aplicação deve ser desenvolvida com foco total em portabilidade, sendo obrigatoriamente compatível com hospedagem padrão VPS ou Node.js (ex: Hostinger), sem depender de nenhum serviço ou banco de dados exclusivo do ambiente Replit.
+
+A interface deve seguir um design visual moderno, limpo, no estilo Google (Material Design ou similar), garantindo facilidade de uso tanto no painel administrativo quanto no player do cliente.
+
+2. Arquitetura e Stack Tecnológica (Obrigatório)
+O desenvolvedor/IA deve entregar código-fonte desacoplado de plataformas proprietárias em nuvem.
+
+Backend: Node.js (Express, NestJS ou Fastify).
+
+Frontend: HTML/CSS/JavaScript (Vanilla) ou React/Vite.
+
+Banco de Dados: MySQL, MariaDB ou PostgreSQL (via ORM como Prisma ou Sequelize).
+
+Configuração: Uso estrito de variáveis de ambiente (.env) para portas, URLs de banco e chaves secretas.
+
+Áudio: Arquivos em formato MP3/AAC armazenados de forma persistente (não usar filesystem temporário).
+
+3. Estrutura Multi-Tenant e Autenticação (Gatekeeper)
+O sistema operará no modelo multi-cliente, onde cada cliente possui sua própria grade de áudios.
+
+Device Fingerprinting: Ao acessar o PWA pela primeira vez, o sistema gera um UUID gravado em Cookie/LocalStorage.
+
+Captura de Lead e Bloqueio: O player fica bloqueado até o cliente inserir seu E-mail. O acesso entra em status Pendente.
+
+Autorização: O administrador (no painel) visualiza o dispositivo (UUID + E-mail) e aprova o acesso.
+
+Master Override: Se o e-mail inserido no player for o e-mail master do administrador, o dispositivo é aprovado e liberado automaticamente.
+
+Segurança: O streaming de mídia só ocorre se o UUID/E-mail solicitante constar como Ativo no banco de dados.
+
+4. O Player do Cliente (Frontend PWA)
+O terminal que roda no estabelecimento do cliente não requer configuração local, apenas a reprodução.
+
+PWA Completo: Deve conter manifest.json, Service Worker, ícones, HTTPS obrigatório e instalação em modo standalone.
+
+Controles de Navegação: Play, Pause, Avançar (pular mídia) e Retroceder.
+
+Dual Volume Control: Sliders de volume independentes no player — um para Músicas e outro para Locuções/Vinhetas. O sistema respeita o ganho predefinido de cada categoria.
+
+Crossfade: Transição suave de áudio (2 a 3 segundos) entre o fim de uma faixa e o início de outra, evitando cortes secos.
+
+Visualização (Up Next): Interface exibindo "Tocando Agora" (com capa, se houver) e uma fila visual das próximas mídias programadas.
+
+Resiliência Offline (Preload): O Service Worker deve fazer o pré-carregamento em cache das próximas 3 a 5 músicas da fila e de todas as locuções agendadas para o dia, garantindo reprodução sem pausas em caso de queda de internet.
+
+Tratamento de Autoplay: Fluxo contornando o bloqueio de autoplay dos navegadores, exigindo um primeiro clique ("Play") do usuário antes de iniciar o ciclo automático.
+
+5. O Painel Administrativo (Gestão)
+Ambiente exclusivo para o administrador gerenciar clientes, grades e autorizações.
+
+Gerenciador de Playlists (Drag-and-Drop): Interface visual para arrastar, soltar e ordenar mídias. As novas posições devem ser persistidas automaticamente no banco de dados.
+
+Modos de Reprodução: Opção de configurar a grade do cliente para tocar no modo Sequencial (ordem exata do banco) ou Aleatório (Shuffle gerado pelo backend).
+
+Regras de Locução: Capacidade de programar locuções/vinhetas por bloco (ex: tocar na ordem predefinida) ou por intervalo de repetição (ex: tocar 1 anúncio a cada 3 músicas).
+
+Persistência de Estado: O backend gerencia o que deve tocar. Se o cliente fechar o PWA e reabrir, o servidor entrega a programação do ponto correto ou seguindo a regra do horário atual.
+
+Monitoramento (Heartbeat): O player envia um ping silencioso (ex: a cada 3 minutos) para o backend. O painel administrativo deve ter um dashboard mostrando o status (Verde = Online, Vermelho = Offline) de cada dispositivo.
+
+6. Gestão de Upload em Massa de Mídias
+Preparação da infraestrutura para suportar grandes volumes de upload (ex: centenas de músicas simultâneas).
+
+Fila de Envio (Frontend): O painel de upload não deve fazer requisições simultâneas de todos os arquivos. Deve utilizar processamento em fila (chunking/lotes), enviando um limite máximo de 3 a 5 arquivos por vez, acompanhado de barra de progresso individual e geral.
+
+Tratamento de Limites (Backend): O backend (Node.js/Multer) deve estar configurado para sobrescrever os limites de tamanho padrão, permitindo cargas contínuas sem erro de "Timeout" ou "Payload Too Large".
+
+Sincronização Local (Alternativa FTP): Criação de uma funcionalidade no painel que varre uma pasta específica no servidor (onde os arquivos foram inseridos via FTP) e cadastra automaticamente as novas mídias encontradas no banco de dados para o cliente selecionado.
+
+7. Relatórios e Comprovação de Veiculação (Logs)
+Sistema robusto de telemetria para comprovação comercial de execuções.
+
+Gatilho de Log: Toda vez que um áudio (música ou locução) terminar de tocar completamente, o player envia um evento para o backend.
+
+Estrutura de Dados do Log: O banco registrará o ID da Mídia, a Data, a Hora exata, o UUID do dispositivo e o E-mail do cliente onde a execução ocorreu.
+
+Visualização de Relatórios: O painel admin deve ter uma tela de relatórios permitindo filtrar as execuções por período, cliente (e-mail) ou anúncio específico, exibindo a contagem total de reproduções para prestação de contas.
+
+8. Entregáveis Obrigatórios para Deploy
+Ao finalizar a codificação, a IA deve preparar o ambiente para a exportação do projeto para a Hostinger:
+
+Código-fonte completo e limpo (Frontend + Backend).
+
+Arquivo package.json com scripts claros de build e start.
+
+Arquivo .env.example mapeando todas as variáveis necessárias.
+
+Migrações ou scripts SQL padronizados para criação das tabelas no banco de dados.
+
+Arquivo README.md contendo o passo a passo exato para instalação das dependências, build e inicialização em um servidor Linux (VPS ou Hospedagem Node.js).

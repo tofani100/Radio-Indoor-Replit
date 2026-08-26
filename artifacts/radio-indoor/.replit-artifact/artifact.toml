@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Rádio Indoor"
+version = "1.0.0"
+id = "artifacts/radio-indoor"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19838
+
+[services.development]
+run = "pnpm --filter @workspace/radio-indoor run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/radio-indoor", "run", "build" ]
+publicDir = "artifacts/radio-indoor/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19838"
+BASE_PATH = "/"

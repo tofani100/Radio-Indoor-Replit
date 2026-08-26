@@ -1,0 +1,11 @@
+/* Radio Indoor sidebar tokens — scoped to this mockup group */
+.radio-indoor-scope {
+  --sidebar: 215 35% 14%;
+  --sidebar-foreground: 210 20% 88%;
+  --sidebar-border: 215 30% 20%;
+  --sidebar-primary: 196 85% 45%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 215 30% 20%;
+  --sidebar-accent-foreground: 210 20% 90%;
+  --sidebar-ring: 196 85% 45%;
+}

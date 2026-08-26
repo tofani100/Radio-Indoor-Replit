@@ -1,0 +1,45 @@
+/* AmbientCard specific tokens */
+.ambient-scope {
+  --ambient-bg: #f9f8f6; /* Paper-like off-white */
+  --ambient-card: #ffffff;
+  --ambient-text: #2c2c2c;
+  --ambient-text-muted: #8c8c8c;
+  --ambient-accent: #c25e40; /* Terracotta */
+  --ambient-accent-light: rgba(194, 94, 64, 0.1);
+  --ambient-border: #eaeaea;
+
+  font-family: 'Inter', sans-serif;
+  background-color: var(--ambient-bg);
+  color: var(--ambient-text);
+}
+
+.ambient-scope .font-serif {
+  font-family: 'Playfair Display', serif;
+}
+
+.ambient-scope input[type=range] {
+  -webkit-appearance: none;
+  background: transparent;
+}
+
+.ambient-scope input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 8px;
+  width: 8px;
+  border-radius: 50%;
+  background: var(--ambient-accent);
+  cursor: pointer;
+  margin-top: -3px;
+}
+
+.ambient-scope input[type=range]::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 2px;
+  cursor: pointer;
+  background: var(--ambient-border);
+  border-radius: 2px;
+}
+
+.ambient-scope input[type=range]:focus {
+  outline: none;
+}
