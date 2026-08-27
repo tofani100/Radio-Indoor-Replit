@@ -557,16 +557,16 @@ export default function PlayerPage() {
     playTrack(next);
   };
 
-  // Sliding window of upcoming tracks: current + next 5.
-  // IMPORTANT: this hook must live ABOVE every early return so that the
-  // hook order stays stable across the gate → pending → active transitions.
+  // Lista completa da fila (relação completa):
+  // Começa na faixa atual (posição 0) e percorre toda a playlist,
+  // fazendo a rotação para o final conforme vai tocando.
   const upcoming = useMemo(() => {
     const list = scheduledItems;
     if (list.length === 0) return [] as Array<{ item: typeof list[number]; absoluteIdx: number }>;
     const out: Array<{ item: typeof list[number]; absoluteIdx: number }> = [];
-    const max = Math.min(6, list.length);
-    for (let k = 0; k < max; k++) {
-      const idx = (currentIdx + k) % list.length;
+    const total = list.length;
+    for (let k = 0; k < total; k++) {
+      const idx = (currentIdx + k) % total;
       out.push({ item: list[idx]!, absoluteIdx: idx });
     }
     return out;
@@ -1129,10 +1129,10 @@ export default function PlayerPage() {
         </div>
 
         {/* Center: Queue */}
-        <div className="lg:w-1/3 bg-[var(--dj-panel)] border border-[var(--dj-border)] rounded-lg shadow-lg flex flex-col overflow-hidden lg:min-h-0 max-h-52 sm:max-h-64 lg:max-h-none">
+        <div className="lg:w-1/3 bg-[var(--dj-panel)] border border-[var(--dj-border)] rounded-lg shadow-lg flex flex-col overflow-hidden lg:min-h-0 max-h-64 sm:max-h-80 lg:max-h-none">
           <div className="px-3 py-2 lg:px-5 lg:py-4 border-b border-[var(--dj-border)] flex items-center justify-between bg-[var(--dj-bg)]/50 flex-none">
             <h2 className="text-[10px] lg:text-xs uppercase font-bold text-[var(--dj-muted)] tracking-widest flex items-center gap-1.5">
-              <Hash className="w-3 h-3 lg:w-4 lg:h-4" /> Fila
+              <Hash className="w-3 h-3 lg:w-4 lg:h-4" /> Fila ({scheduledItems.length} {scheduledItems.length === 1 ? "faixa" : "faixas"})
             </h2>
             {tracksUntilJingle !== null && (
               <div className="flex items-center gap-1.5 bg-[var(--dj-magenta-glow)] border border-[var(--dj-magenta)] text-[var(--dj-magenta)] px-2 py-0.5 rounded text-[9px] uppercase font-bold tracking-wider">
