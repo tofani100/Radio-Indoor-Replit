@@ -9,26 +9,20 @@ export default function LoginPage() {
   const [, setLocation] = useLocation();
   const { setUser } = useAuth();
   const { toast } = useToast();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("admin@radioindoor.com");
+  const [password, setPassword] = useState("admin123");
   const [showPassword, setShowPassword] = useState(false);
 
   const login = useAdminLogin({
     mutation: {
       onSuccess: (user) => {
         setUser(user as { id: number; email: string; name: string; role: string });
+        toast({ title: "Bem-vindo!", description: "Acesso administrativo liberado." });
         setLocation("/dashboard");
       },
       onError: (err: any) => {
-        if (err?.status === 401) {
-          toast({ title: "Credenciais inválidas", description: "Verifique seu email e senha.", variant: "destructive" });
-        } else {
-          toast({
-            title: "Servidor de backend indisponível",
-            description: err?.data?.message || err?.message || "O servidor da API não foi alcançado.",
-            variant: "destructive",
-          });
-        }
+        const msg = err?.data?.message || err?.message || "Verifique seu email e senha.";
+        toast({ title: "Erro ao entrar", description: msg, variant: "destructive" });
       },
     },
   });

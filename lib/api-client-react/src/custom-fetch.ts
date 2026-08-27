@@ -337,14 +337,58 @@ async function parseSuccessBody(
   }
 }
 
+import { handleStandaloneRequest } from "./standalone-store";
+
 export async function customFetch<T = unknown>(
   input: RequestInfo | URL,
   options: CustomFetchOptions = {},
 ): Promise<T> {
+  const urlStr = resolveUrl(input);
+  const method = resolveMethod(input, options.method);
+
+  // In standalone mode (e.g. on Firebase Hosting without a remote backend server),
+  // route /api/* directly to the embedded IndexedDB store.
+  const isBrowser = typeof window !== "undefined";
+  const isStaticHosting = isBrowser && (
+    window.location.hostname.includes("web.app") ||
+    window.location.hostname.includes("firebaseapp.com") ||
+    !_baseUrl
+  );
+
+  let bodyData: any = null;
+  if (options.body) {
+    if (options.body instanceof FormData) {
+      bodyData = options.body;
+    } else if (typeof options.body === "string") {
+      try {
+        bodyData = JSON.parse(options.body);
+      } catch {
+        bodyData = options.body;
+      }
+    }
+  }
+
+  if (isStaticHosting && (urlStr.startsWith("/api/") || urlStr.includes("/api/"))) {
+    try {
+      const apiPath = urlStr.startsWith("http") ? new URL(urlStr).pathname + new URL(urlStr).search : urlStr;
+      const res = await handleStandaloneRequest(apiPath, method, bodyData);
+      if (res.status >= 200 && res.status < 300) {
+        return res.data as T;
+      } else {
+        throw new ApiError(
+          new Response(JSON.stringify(res.data), { status: res.status }),
+          res.data,
+          { method, url: urlStr }
+        );
+      }
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      console.warn("Standalone request error:", err);
+    }
+  }
+
   input = applyBaseUrl(input);
   const { responseType = "auto", headers: headersInit, ...init } = options;
-
-  const method = resolveMethod(input, init.method);
 
   if (init.body != null && (method === "GET" || method === "HEAD")) {
     throw new TypeError(`customFetch: ${method} requests cannot have a body.`);
@@ -364,8 +408,6 @@ export async function customFetch<T = unknown>(
     headers.set("accept", DEFAULT_JSON_ACCEPT);
   }
 
-  // Attach bearer token when an auth getter is configured and no
-  // Authorization header has been explicitly provided.
   if (_authTokenGetter && !headers.has("authorization")) {
     const token = await _authTokenGetter();
     if (token) {
@@ -375,12 +417,24 @@ export async function customFetch<T = unknown>(
 
   const requestInfo = { method, url: resolveUrl(input) };
 
-  const response = await fetch(input, { credentials: "include", ...init, method, headers });
+  try {
+    const response = await fetch(input, { credentials: "include", ...init, method, headers });
 
-  if (!response.ok) {
-    const errorData = await parseErrorBody(response, method);
-    throw new ApiError(response, errorData, requestInfo);
+    if (!response.ok) {
+      const errorData = await parseErrorBody(response, method);
+      throw new ApiError(response, errorData, requestInfo);
+    }
+
+    return (await parseSuccessBody(response, responseType, requestInfo)) as T;
+  } catch (fetchErr) {
+    // If fetch failed completely, fallback to standalone local store
+    if (urlStr.startsWith("/api/") || urlStr.includes("/api/")) {
+      const apiPath = urlStr.startsWith("http") ? new URL(urlStr).pathname + new URL(urlStr).search : urlStr;
+      const res = await handleStandaloneRequest(apiPath, method, bodyData);
+      if (res.status >= 200 && res.status < 300) {
+        return res.data as T;
+      }
+    }
+    throw fetchErr;
   }
-
-  return (await parseSuccessBody(response, responseType, requestInfo)) as T;
 }
