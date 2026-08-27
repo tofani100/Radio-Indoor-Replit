@@ -12,98 +12,41 @@ export default function LoginPage() {
   const [, setLocation] = useLocation();
   const { setUser } = useAuth();
   const { toast } = useToast();
-  const [email, setEmail] = useState("admin@radioindoor.com");
-  const [password, setPassword] = useState("admin123");
+
+  // Preenche apenas se este navegador foi previamente autenticado como tofani100@gmail.com
+  const [email, setEmail] = useState(() => {
+    try {
+      const isMaster =
+        localStorage.getItem("radio_indoor_trusted_admin") === "tofani100@gmail.com" ||
+        localStorage.getItem("radio_indoor_email") === "tofani100@gmail.com";
+      return isMaster ? "admin@radioindoor.com" : "";
+    } catch {
+      return "";
+    }
+  });
+
+  const [password, setPassword] = useState(() => {
+    try {
+      const isMaster =
+        localStorage.getItem("radio_indoor_trusted_admin") === "tofani100@gmail.com" ||
+        localStorage.getItem("radio_indoor_email") === "tofani100@gmail.com";
+      return isMaster ? "admin123" : "";
+    } catch {
+      return "";
+    }
+  });
+
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // States for password reset / admin creation modal
-  const [resetModalOpen, setResetModalOpen] = useState(false);
-  const [resetName, setResetName] = useState("");
-  const [resetEmail, setResetEmail] = useState("");
-  const [resetPassword, setResetPassword] = useState("");
-  const [showResetPassword, setShowResetPassword] = useState(false);
-
-  const handleSaveNewAdmin = async () => {
-    const cleanEmail = resetEmail.trim().toLowerCase();
-    const cleanPass = resetPassword.trim();
-    if (!cleanEmail || !cleanPass) {
-      toast({ title: "Preencha todos os campos", description: "Informe o e-mail e a nova senha.", variant: "destructive" });
-      return;
-    }
-
-    try {
-      // 1. Salvar no backup resiliente do localStorage
-      const storageKey = "radio_indoor_admins_backup";
-      let admins: any[] = [];
-      try {
-        const raw = localStorage.getItem(storageKey);
-        if (raw) admins = JSON.parse(raw);
-      } catch {
-        admins = [];
-      }
-      if (!Array.isArray(admins)) admins = [];
-
-      const idx = admins.findIndex((a) => a.email && a.email.toLowerCase() === cleanEmail);
-      const newAdminObj = {
-        id: idx >= 0 ? admins[idx].id : Date.now(),
-        name: resetName.trim() || (idx >= 0 ? admins[idx].name : "Administrador"),
-        email: cleanEmail,
-        passwordHash: cleanPass,
-        role: "admin",
-        createdAt: new Date().toISOString(),
-      };
-
-      if (idx >= 0) {
-        admins[idx] = newAdminObj;
-      } else {
-        admins.push(newAdminObj);
-      }
-      localStorage.setItem(storageKey, JSON.stringify(admins));
-
-      // 2. Chamar o store standalone para sincronizar
-      await handleStandaloneRequest("/api/admin/users", "POST", {
-        name: newAdminObj.name,
-        email: cleanEmail,
-        password: cleanPass,
-      }).catch(() => {});
-
-      // 3. Preencher automaticamente os campos de login
-      setEmail(cleanEmail);
-      setPassword(cleanPass);
-      toast({
-        title: "Acesso administrativo salvo!",
-        description: `Login configurado para ${cleanEmail}. Você já pode clicar em Entrar.`,
-      });
-      setResetModalOpen(false);
-      setResetPassword("");
-    } catch (e: any) {
-      toast({ title: "Erro ao salvar", description: e.message || "Falha ao salvar acesso.", variant: "destructive" });
-    }
-  };
-
-  const handleRestoreDefaults = async () => {
-    try {
-      const storageKey = "radio_indoor_admins_backup";
-      const defaults = [
-        { id: 1, name: "Administrador Principal", email: "admin@radioindoor.com", passwordHash: "admin123", role: "admin", createdAt: new Date().toISOString() },
-        { id: 2, name: "Admin Master", email: "tofani100@gmail.com", passwordHash: "admin123", role: "admin", createdAt: new Date().toISOString() },
-      ];
-      localStorage.setItem(storageKey, JSON.stringify(defaults));
-      await handleStandaloneRequest("/api/admin/reset-password", "POST", { email: "admin@radioindoor.com", newPassword: "admin123" }).catch(() => {});
-      await handleStandaloneRequest("/api/admin/reset-password", "POST", { email: "tofani100@gmail.com", newPassword: "admin123" }).catch(() => {});
-      setEmail("admin@radioindoor.com");
-      setPassword("admin123");
-      toast({ title: "Acessos padrão restaurados!", description: "admin@radioindoor.com e tofani100@gmail.com (senha: admin123)." });
-      setResetModalOpen(false);
-    } catch (e: any) {
-      toast({ title: "Erro ao restaurar", description: e.message, variant: "destructive" });
-    }
-  };
 
   const login = useAdminLogin({
     mutation: {
       onSuccess: (user) => {
+        try {
+          localStorage.setItem("radio_indoor_trusted_admin", "tofani100@gmail.com");
+        } catch {
+          // ignore
+        }
         setUser(user as { id: number; email: string; name: string; role: string });
         toast({ title: "Bem-vindo!", description: "Acesso administrativo liberado." });
         setLocation("/dashboard");
@@ -121,6 +64,11 @@ export default function LoginPage() {
     try {
       const res = await handleStandaloneRequest("/api/auth/login", "POST", { email, password });
       if (res.status === 200 && res.data) {
+        try {
+          localStorage.setItem("radio_indoor_trusted_admin", "tofani100@gmail.com");
+        } catch {
+          // ignore
+        }
         setUser(res.data as { id: number; email: string; name: string; role: string });
         toast({ title: "Bem-vindo!", description: "Acesso administrativo liberado." });
         setLocation("/dashboard");
