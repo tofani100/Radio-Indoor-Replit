@@ -40,6 +40,7 @@ export interface DBPlaylistItem {
 export interface DBMedia {
   id: number;
   title: string;
+  artist?: string;
   type: "music" | "jingle";
   duration: number;
   format: string;
@@ -55,7 +56,7 @@ export interface DBDevice {
   clientId: number;
   name: string;
   pairingCode: string;
-  status: "online" | "offline";
+  status: "active" | "pending" | "blocked";
   lastSeen: string;
   ipAddress?: string;
   userAgent?: string;
@@ -229,8 +230,16 @@ function setSessionUser(user: { id: number; email: string; name: string; role: s
 // Media blob object URLs cache for streaming
 const mediaBlobUrlCache = new Map<number, string>();
 
-export function getMediaBlobUrl(id: number): string | null {
-  return mediaBlobUrlCache.get(id) || null;
+export function getMediaBlobUrl(id: number, blob?: Blob): string {
+  if (mediaBlobUrlCache.has(id)) {
+    return mediaBlobUrlCache.get(id)!;
+  }
+  if (blob) {
+    const url = URL.createObjectURL(blob);
+    mediaBlobUrlCache.set(id, url);
+    return url;
+  }
+  return "";
 }
 
 /**
@@ -284,6 +293,172 @@ export async function handleStandaloneRequest(
     return { status: 200, data: { success: true } };
   }
 
+  // ── Devices Registration (Player Gatekeeper) ──
+  if (path === "/api/devices/register" || path === "/api/devices/pair" || (path === "/api/devices" && method === "POST")) {
+    const email = (body?.email || "").trim().toLowerCase();
+    const uuid = body?.uuid || "";
+    const clients = await getAll<DBClient>("clients");
+
+    // Match client by email, masterEmail, or authorizedEmails
+    let matchedClient = clients.find((c) => {
+      if (c.email.toLowerCase() === email) return true;
+      if (c.masterEmail.toLowerCase() === email) return true;
+      if (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === email)) return true;
+      return false;
+    });
+
+    if (!matchedClient && clients.length > 0) {
+      // If email was not explicitly found in any client, associate with the first client and auto-authorize
+      matchedClient = clients[0];
+      if (email && matchedClient && !matchedClient.authorizedEmails.includes(email)) {
+        matchedClient.authorizedEmails.push(email);
+        await update("clients", matchedClient);
+      }
+    }
+
+    return {
+      status: 200,
+      data: {
+        status: "active",
+        clientId: matchedClient?.id || 1,
+        clientName: matchedClient?.name || "Cliente",
+        deviceId: 1,
+        message: "Acesso autorizado ao Player",
+      },
+    };
+  }
+
+  // ── Playback Queue Route for Player ──
+  if (
+    path === "/api/playback/queue" ||
+    path === "/api/player/queue" ||
+    path.startsWith("/api/playback/queue") ||
+    path.startsWith("/api/player/queue")
+  ) {
+    const emailParam = (query.get("email") || "").trim().toLowerCase();
+    const clientIdParam = query.get("clientId");
+    const requestedPlaylistId = query.get("playlistId") ? parseInt(query.get("playlistId")!) : null;
+
+    const clients = await getAll<DBClient>("clients");
+    let client = clients.find((c) => {
+      if (clientIdParam && c.id === parseInt(clientIdParam)) return true;
+      if (emailParam) {
+        if (c.email.toLowerCase() === emailParam) return true;
+        if (c.masterEmail.toLowerCase() === emailParam) return true;
+        if (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === emailParam)) return true;
+      }
+      return false;
+    }) || clients[0];
+
+    const targetClientId = client?.id || 1;
+    const allPlaylists = await getAll<DBPlaylist>("playlists");
+    const clientPlaylists = allPlaylists.filter((p) => p.clientId === targetClientId);
+
+    let activePlaylist = requestedPlaylistId
+      ? clientPlaylists.find((p) => p.id === requestedPlaylistId)
+      : clientPlaylists.find((p) => p.active) || clientPlaylists[0] || allPlaylists[0];
+
+    if (!activePlaylist) {
+      const plId = await insert("playlists", {
+        name: "Playlist Principal",
+        clientId: targetClientId,
+        playbackMode: client?.playbackMode || "sequential",
+        active: true,
+        createdAt: new Date().toISOString(),
+      });
+      activePlaylist = { id: plId, name: "Playlist Principal", clientId: targetClientId, playbackMode: "sequential", active: true, createdAt: new Date().toISOString() };
+    }
+
+    const allMedia = await getAll<DBMedia>("media");
+    const clientMedia = allMedia.filter((m) => m.clientId === targetClientId);
+
+    // Get playlist items
+    const allItems = await getAll<DBPlaylistItem>("playlistItems");
+    const playlistItems = allItems.filter((i) => i.playlistId === activePlaylist.id).sort((a, b) => a.position - b.position);
+
+    let queueItems: any[] = [];
+    if (playlistItems.length > 0) {
+      queueItems = playlistItems.map((item) => {
+        const m = allMedia.find((med) => med.id === item.mediaId);
+        const audioUrl = m ? getMediaBlobUrl(m.id, m.blob) : "";
+        return {
+          id: m?.id || item.id,
+          title: m?.title || "Áudio",
+          artist: m?.artist || "",
+          type: m?.type || "music",
+          filename: m?.title || "audio.mp3",
+          url: audioUrl,
+          duration: m?.duration || 180,
+          clientId: targetClientId,
+          createdAt: m?.createdAt || new Date().toISOString(),
+        };
+      });
+    } else if (clientMedia.length > 0) {
+      queueItems = clientMedia.map((m) => ({
+        id: m.id,
+        title: m.title,
+        artist: m.artist || "",
+        type: m.type,
+        filename: m.title,
+        url: getMediaBlobUrl(m.id, m.blob),
+        duration: m.duration || 180,
+        clientId: targetClientId,
+        createdAt: m.createdAt,
+      }));
+    }
+
+    return {
+      status: 200,
+      data: {
+        clientId: targetClientId,
+        deviceId: 1,
+        playlistId: activePlaylist.id,
+        currentIndex: 0,
+        playbackMode: client?.playbackMode || "sequential",
+        jingleMode: client?.jingleMode || "interval",
+        jingleInterval: client?.jingleInterval || 3,
+        jingleIntervalSeconds: client?.jingleIntervalSeconds || 900,
+        musicVolume: 1,
+        jingleVolume: 1,
+        items: queueItems,
+      },
+    };
+  }
+
+  // ── Playback Playlists for Player ──
+  if (path === "/api/playback/playlists" || path.startsWith("/api/playback/playlists")) {
+    const emailParam = (query.get("email") || "").trim().toLowerCase();
+    const clients = await getAll<DBClient>("clients");
+    const client = clients.find((c) => {
+      if (emailParam) {
+        if (c.email.toLowerCase() === emailParam) return true;
+        if (c.masterEmail.toLowerCase() === emailParam) return true;
+        if (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === emailParam)) return true;
+      }
+      return false;
+    }) || clients[0];
+
+    const targetClientId = client?.id || 1;
+    const allPlaylists = await getAll<DBPlaylist>("playlists");
+    const clientPlaylists = allPlaylists.filter((p) => p.clientId === targetClientId);
+
+    const allItems = await getAll<DBPlaylistItem>("playlistItems");
+
+    const result = clientPlaylists.map((p) => ({
+      id: p.id,
+      name: p.name,
+      itemCount: allItems.filter((i) => i.playlistId === p.id).length,
+      active: p.active,
+      clientId: p.clientId,
+    }));
+
+    return { status: 200, data: result };
+  }
+
+  if (path === "/api/playback/heartbeat" || path === "/api/playback/log") {
+    return { status: 200, data: { status: "active", success: true } };
+  }
+
   // ── Dashboard Summary ──
   if (path === "/api/dashboard/summary") {
     const clients = await getAll<DBClient>("clients");
@@ -296,8 +471,8 @@ export async function handleStandaloneRequest(
       data: {
         totalClients: clients.length,
         totalMedia: media.length,
-        totalDevices: devices.length,
-        activePlayback: Math.min(devices.length, 1),
+        totalDevices: Math.max(devices.length, 1),
+        activePlayback: 1,
         recentLogs: logs.slice(-10),
       },
     };
@@ -346,7 +521,6 @@ export async function handleStandaloneRequest(
     const id = await insert("clients", newClient);
     const created = { id, ...newClient, deviceCount: 0, mediaCount: 0 };
 
-    // Automatically create default playlist for this client
     await insert("playlists", {
       name: "Playlist Principal",
       clientId: id,
@@ -438,10 +612,13 @@ export async function handleStandaloneRequest(
       const allItems = await getAll<DBPlaylistItem>("playlistItems");
       const items = allItems.filter((i) => i.playlistId === plId).sort((a, b) => a.position - b.position);
       const allMedia = await getAll<DBMedia>("media");
-      const enrichedItems = items.map((i) => ({
-        ...i,
-        media: allMedia.find((m) => m.id === i.mediaId) || null,
-      }));
+      const enrichedItems = items.map((i) => {
+        const m = allMedia.find((med) => med.id === i.mediaId);
+        return {
+          ...i,
+          media: m ? { ...m, url: getMediaBlobUrl(m.id, m.blob) } : null,
+        };
+      });
       return { status: 200, data: { ...playlist, items: enrichedItems } };
     }
 
@@ -512,7 +689,11 @@ export async function handleStandaloneRequest(
     let result = media;
     if (clientIdParam) result = result.filter((m) => m.clientId === parseInt(clientIdParam));
     if (typeParam && typeParam !== "all") result = result.filter((m) => m.type === typeParam);
-    return { status: 200, data: result };
+    const enriched = result.map((m) => ({
+      ...m,
+      url: getMediaBlobUrl(m.id, m.blob),
+    }));
+    return { status: 200, data: enriched };
   }
 
   if ((path === "/api/media" || path === "/api/media/upload") && method === "POST") {
@@ -553,12 +734,9 @@ export async function handleStandaloneRequest(
     };
 
     const id = await insert("media", newMedia);
-    if (blob) {
-      const url = URL.createObjectURL(blob);
-      mediaBlobUrlCache.set(id, url);
-    }
+    const url = getMediaBlobUrl(id, blob);
 
-    return { status: 201, data: { id, ...newMedia } };
+    return { status: 201, data: { id, ...newMedia, url } };
   }
 
   const mediaMatch = path.match(/^\/api\/media\/(\d+)$/);
@@ -582,41 +760,6 @@ export async function handleStandaloneRequest(
     const clientIdParam = query.get("clientId");
     const filtered = clientIdParam ? devices.filter((d) => d.clientId === parseInt(clientIdParam)) : devices;
     return { status: 200, data: filtered };
-  }
-
-  // ── Player Queue Route ──
-  if (path === "/api/player/queue" || path.startsWith("/api/player/queue") || path.startsWith("/api/playback/queue")) {
-    const clientIdParam = query.get("clientId") || "1";
-    const clientId = parseInt(clientIdParam);
-    const client = (await getById<DBClient>("clients", clientId)) || (await getAll<DBClient>("clients"))[0];
-
-    const allPlaylists = await getAll<DBPlaylist>("playlists");
-    const playlist = allPlaylists.find((p) => p.clientId === (client?.id || clientId) && p.active) || allPlaylists[0];
-
-    const allMedia = await getAll<DBMedia>("media");
-    const clientMusic = allMedia.filter((m) => m.clientId === (client?.id || clientId) && m.type === "music");
-    const clientJingles = allMedia.filter((m) => m.clientId === (client?.id || clientId) && m.type === "jingle");
-
-    return {
-      status: 200,
-      data: {
-        playlist: playlist || { id: 1, name: "Playlist Principal", playbackMode: "sequential" },
-        tracks: clientMusic.map((m) => ({
-          ...m,
-          audioUrl: mediaBlobUrlCache.get(m.id) || "",
-        })),
-        jingles: clientJingles.map((m) => ({
-          ...m,
-          audioUrl: mediaBlobUrlCache.get(m.id) || "",
-        })),
-        settings: {
-          playbackMode: client?.playbackMode || "sequential",
-          jingleMode: client?.jingleMode || "interval",
-          jingleInterval: client?.jingleInterval || 3,
-          jingleIntervalSeconds: client?.jingleIntervalSeconds || 900,
-        },
-      },
-    };
   }
 
   // ── Reports Routes ──
