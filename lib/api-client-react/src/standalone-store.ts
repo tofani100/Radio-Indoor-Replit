@@ -198,6 +198,21 @@ export async function getAll<T extends { id: number }>(storeName: string): Promi
         await putLocal(storeName, it);
       }
       return items;
+    } else {
+      // Cloud is empty for this collection: check if local has data and push up to Cloud Firestore
+      const local = await getLocalAll<T>(storeName);
+      if (local.length > 0) {
+        for (const item of local) {
+          try {
+            const dRef = doc(firestore, storeName, String(item.id));
+            const { blob, ...data } = item as any;
+            await setDoc(dRef, data);
+          } catch (syncErr) {
+            console.warn(`[Firestore] sync up ${storeName} item failed:`, syncErr);
+          }
+        }
+        return local;
+      }
     }
   } catch (err) {
     console.warn(`[Firestore] getAll(${storeName}) failed, using local cache:`, err);
