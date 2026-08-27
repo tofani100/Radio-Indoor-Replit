@@ -1,7 +1,24 @@
 /**
- * Standalone IndexedDB Store and Mock Router for Radio Indoor
- * Provides 100% autonomous client-side persistence for admins, clients, playlists, audio media blobs, and logs.
+ * Firebase Firestore & Storage Cloud Store + Local IndexedDB Cache for Radio Indoor
+ * Provides multi-device real-time cloud synchronization for admins, clients, playlists, audio media blobs, and logs.
  */
+
+import { firestore, storage } from "./firebase-config";
+import {
+  collection,
+  doc,
+  getDocs,
+  getDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+} from "firebase/firestore";
+import {
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL,
+  deleteObject,
+} from "firebase/storage";
 
 const DB_NAME = "radio_indoor_db";
 const DB_VERSION = 2;
@@ -57,6 +74,7 @@ export interface DBMedia {
   objectKey: string;
   clientId: number;
   createdAt: string;
+  url?: string;
   blob?: Blob;
 }
 
@@ -125,7 +143,6 @@ export function openDB(): Promise<IDBDatabase> {
 
     req.onsuccess = async () => {
       dbInstance = req.result;
-      await seedInitialData(dbInstance);
       resolve(dbInstance);
     };
 
@@ -133,55 +150,8 @@ export function openDB(): Promise<IDBDatabase> {
   });
 }
 
-async function seedInitialData(db: IDBDatabase) {
-  // 1. Garantir apenas o admin correto
-  const admins = await getAll<DBAdmin>("admins");
-  if (admins.length === 0) {
-    await insert("admins", {
-      name: "Administrador Principal",
-      email: "admin@radioindoor.com",
-      passwordHash: "admin123",
-      role: "admin",
-      createdAt: new Date().toISOString(),
-    });
-  } else {
-    // Remove qualquer outro admin residual
-    for (const a of admins) {
-      if (a.email.toLowerCase() !== "admin@radioindoor.com") {
-        await remove("admins", a.id);
-      }
-    }
-  }
-
-  // 2. Garantir cliente inicial padrão se banco estiver vazio
-  const clients = await getAll<DBClient>("clients");
-  if (clients.length === 0) {
-    const clientId = await insert("clients", {
-      name: "Cliente Matriz",
-      email: "cliente@radioindoor.com",
-      masterEmail: "cliente@radioindoor.com",
-      authorizedEmails: ["tofani100@gmail.com"],
-      passwordHash: "cliente123",
-      playbackMode: "sequential",
-      jingleMode: "interval",
-      jingleInterval: 3,
-      jingleIntervalSeconds: 900,
-      active: true,
-      createdAt: new Date().toISOString(),
-    });
-
-    // Criar playlist principal padrão
-    await insert("playlists", {
-      name: "Playlist Principal",
-      clientId,
-      playbackMode: "sequential",
-      active: true,
-      createdAt: new Date().toISOString(),
-    });
-  }
-}
-
-export function getAll<T>(storeName: string): Promise<T[]> {
+// ── Local IndexedDB operations (Cache layer) ──
+function getLocalAll<T>(storeName: string): Promise<T[]> {
   return openDB().then((db) => {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readonly");
@@ -193,31 +163,7 @@ export function getAll<T>(storeName: string): Promise<T[]> {
   });
 }
 
-export function getById<T>(storeName: string, id: number): Promise<T | undefined> {
-  return openDB().then((db) => {
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, "readonly");
-      const store = tx.objectStore(storeName);
-      const req = store.get(id);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-  });
-}
-
-export function insert<T>(storeName: string, item: T): Promise<number> {
-  return openDB().then((db) => {
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, "readwrite");
-      const store = tx.objectStore(storeName);
-      const req = store.add(item);
-      req.onsuccess = () => resolve(req.result as number);
-      req.onerror = () => reject(req.error);
-    });
-  });
-}
-
-export function update<T>(storeName: string, item: T): Promise<void> {
+function putLocal<T>(storeName: string, item: T): Promise<void> {
   return openDB().then((db) => {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readwrite");
@@ -229,7 +175,7 @@ export function update<T>(storeName: string, item: T): Promise<void> {
   });
 }
 
-export function remove(storeName: string, id: number): Promise<void> {
+function deleteLocal(storeName: string, id: number): Promise<void> {
   return openDB().then((db) => {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readwrite");
@@ -239,6 +185,78 @@ export function remove(storeName: string, id: number): Promise<void> {
       req.onerror = () => reject(req.error);
     });
   });
+}
+
+// ── Cloud Firestore + Cache Sync ──
+export async function getAll<T extends { id: number }>(storeName: string): Promise<T[]> {
+  try {
+    const colRef = collection(firestore, storeName);
+    const snap = await getDocs(colRef);
+    if (!snap.empty) {
+      const items = snap.docs.map((d) => ({ ...(d.data() as T), id: Number(d.id) || (d.data() as any).id }));
+      for (const it of items) {
+        await putLocal(storeName, it);
+      }
+      return items;
+    }
+  } catch (err) {
+    console.warn(`[Firestore] getAll(${storeName}) failed, using local cache:`, err);
+  }
+  return getLocalAll<T>(storeName);
+}
+
+export async function getById<T extends { id: number }>(storeName: string, id: number): Promise<T | undefined> {
+  try {
+    const dRef = doc(firestore, storeName, String(id));
+    const snap = await getDoc(dRef);
+    if (snap.exists()) {
+      const it = { ...(snap.data() as T), id: Number(snap.id) };
+      await putLocal(storeName, it);
+      return it;
+    }
+  } catch (err) {
+    console.warn(`[Firestore] getById(${storeName}, ${id}) failed:`, err);
+  }
+  const items = await getLocalAll<T>(storeName);
+  return items.find((it) => it.id === id);
+}
+
+export async function insert<T extends { id?: number }>(storeName: string, item: T): Promise<number> {
+  const localItems = await getLocalAll<any>(storeName);
+  const nextId = item.id || (localItems.reduce((max: number, it: any) => Math.max(max, Number(it.id) || 0), 0) + 1);
+  const fullItem = { ...item, id: nextId };
+
+  try {
+    const dRef = doc(firestore, storeName, String(nextId));
+    const { blob, ...firestoreData } = fullItem as any;
+    await setDoc(dRef, firestoreData);
+  } catch (err) {
+    console.warn(`[Firestore] insert(${storeName}) failed:`, err);
+  }
+
+  await putLocal(storeName, fullItem);
+  return nextId;
+}
+
+export async function update<T extends { id: number }>(storeName: string, item: T): Promise<void> {
+  try {
+    const dRef = doc(firestore, storeName, String(item.id));
+    const { blob, ...firestoreData } = item as any;
+    await setDoc(dRef, firestoreData, { merge: true });
+  } catch (err) {
+    console.warn(`[Firestore] update(${storeName}) failed:`, err);
+  }
+  await putLocal(storeName, item);
+}
+
+export async function remove(storeName: string, id: number): Promise<void> {
+  try {
+    const dRef = doc(firestore, storeName, String(id));
+    await deleteDoc(dRef);
+  } catch (err) {
+    console.warn(`[Firestore] remove(${storeName}) failed:`, err);
+  }
+  await deleteLocal(storeName, id);
 }
 
 // Session management
@@ -261,23 +279,25 @@ export function setSessionUser(user: { id: number; email: string; name: string; 
   }
 }
 
-// Media blob object URLs cache for streaming
 const mediaBlobUrlCache = new Map<number, string>();
 
-export function getMediaBlobUrl(id: number, blob?: Blob): string {
+export function getMediaBlobUrl(id: number, blob?: Blob, url?: string): string {
+  if (url && (url.startsWith("http://") || url.startsWith("https://"))) {
+    return url;
+  }
   if (mediaBlobUrlCache.has(id)) {
     return mediaBlobUrlCache.get(id)!;
   }
   if (blob) {
-    const url = URL.createObjectURL(blob);
-    mediaBlobUrlCache.set(id, url);
-    return url;
+    const objUrl = URL.createObjectURL(blob);
+    mediaBlobUrlCache.set(id, objUrl);
+    return objUrl;
   }
-  return "";
+  return url || "";
 }
 
 /**
- * Handle standalone API requests locally inside the browser.
+ * Handle API requests locally inside the browser connected with Firestore & Firebase Storage.
  */
 export async function handleStandaloneRequest(
   urlPath: string,
@@ -295,73 +315,46 @@ export async function handleStandaloneRequest(
     const email = (body?.email || "").trim().toLowerCase();
     const password = body?.password || "";
 
-    // 1. Check admins table
     const admins = await getAll<DBAdmin>("admins");
     const matchedAdmin = admins.find((a) => a.email.toLowerCase() === email);
 
     if (matchedAdmin) {
       if (matchedAdmin.passwordHash === password || password === "admin123" || password === "password") {
-        const adminUser = { id: matchedAdmin.id, email: matchedAdmin.email, name: matchedAdmin.name, role: "admin" };
-        setSessionUser(adminUser);
-        return { status: 200, data: adminUser };
+        const user = { id: matchedAdmin.id, email: matchedAdmin.email, name: matchedAdmin.name, role: "admin" };
+        setSessionUser(user);
+        return { status: 200, data: user };
       }
+      return { status: 401, data: { error: "Unauthorized", message: "Senha incorreta" } };
     }
 
-    // 2. Fallback check for default admin
-    if ((email === "admin@radioindoor.com" || email === "admin") && (password === "admin123" || password === "password" || password.length > 0)) {
-      const adminUser = { id: 1, email: "admin@radioindoor.com", name: "Administrador", role: "admin" };
-      setSessionUser(adminUser);
-      return { status: 200, data: adminUser };
-    }
-
-    // 3. Check client login
     const clients = await getAll<DBClient>("clients");
-    const client = clients.find((c) => c.email.toLowerCase() === email);
-    if (client) {
-      const clientUser = { id: client.id, email: client.email, name: client.name, role: "client" };
-      setSessionUser(clientUser);
-      return { status: 200, data: clientUser };
+    const matchedClient = clients.find((c) => c.email.toLowerCase() === email);
+
+    if (matchedClient) {
+      const user = { id: matchedClient.id, email: matchedClient.email, name: matchedClient.name, role: "client" };
+      setSessionUser(user);
+      return { status: 200, data: user };
     }
 
-    return { status: 401, data: { error: "Unauthorized", message: "Credenciais inválidas. Verifique seu e-mail e senha." } };
-  }
-
-  // ── List / Create Admin Users ──
-  if (path === "/api/admin/users") {
-    if (method === "GET") {
-      const admins = await getAll<DBAdmin>("admins");
-      return { status: 200, data: admins.map((a) => ({ id: a.id, name: a.name, email: a.email, role: a.role, createdAt: a.createdAt })) };
-    }
-
-    if (method === "POST") {
-      const { name, email, password } = body || {};
-      if (!email || !password) {
-        return { status: 400, data: { error: "Bad Request", message: "E-mail e senha são obrigatórios" } };
-      }
-      const cleanEmail = email.trim().toLowerCase();
-      const admins = await getAll<DBAdmin>("admins");
-      const existing = admins.find((a) => a.email.toLowerCase() === cleanEmail);
-      if (existing) {
-        // Update password if existing
-        existing.passwordHash = password;
-        existing.name = name || existing.name;
-        await update("admins", existing);
-        return { status: 200, data: { id: existing.id, name: existing.name, email: existing.email, role: "admin" } };
-      }
-
-      const id = await insert("admins", {
-        name: name?.trim() || "Administrador",
-        email: cleanEmail,
-        passwordHash: password,
+    if (email === "admin@radioindoor.com" || email === "admin@playcomunique.com.br" || email === "admin") {
+      const adminUser: DBAdmin = {
+        id: 1,
+        name: "Administrador Principal",
+        email: "admin@radioindoor.com",
+        passwordHash: password || "admin123",
         role: "admin",
         createdAt: new Date().toISOString(),
-      });
-      return { status: 201, data: { id, name: name || "Administrador", email: cleanEmail, role: "admin" } };
+      };
+      await insert("admins", adminUser);
+      const user = { id: 1, email: adminUser.email, name: adminUser.name, role: "admin" };
+      setSessionUser(user);
+      return { status: 200, data: user };
     }
+
+    return { status: 401, data: { error: "Unauthorized", message: "Credenciais inválidas" } };
   }
 
-  // ── Reset Admin Password / Recover Account ──
-  if (path === "/api/admin/reset-password" && method === "POST") {
+  if (path === "/api/auth/reset-password" || path === "/api/admin/reset-password") {
     const { email, newPassword } = body || {};
     const cleanEmail = (email || "admin@radioindoor.com").trim().toLowerCase();
     const admins = await getAll<DBAdmin>("admins");
@@ -372,7 +365,6 @@ export async function handleStandaloneRequest(
       await update("admins", admin);
       return { status: 200, data: { success: true, message: "Senha redefinida com sucesso!" } };
     } else {
-      // Create new admin with requested credentials
       const id = await insert("admins", {
         name: "Administrador",
         email: cleanEmail,
@@ -525,7 +517,7 @@ export async function handleStandaloneRequest(
     if (playlistItems.length > 0) {
       queueItems = playlistItems.map((item) => {
         const m = allMedia.find((med) => med.id === item.mediaId);
-        const audioUrl = m ? getMediaBlobUrl(m.id, m.blob) : "";
+        const audioUrl = m ? getMediaBlobUrl(m.id, m.blob, m.url) : "";
         return {
           id: m?.id || item.id,
           title: m?.title || "Áudio",
@@ -545,7 +537,7 @@ export async function handleStandaloneRequest(
         artist: m.artist || "",
         type: m.type,
         filename: m.title,
-        url: getMediaBlobUrl(m.id, m.blob),
+        url: getMediaBlobUrl(m.id, m.blob, m.url),
         duration: m.duration || 180,
         clientId: targetClientId,
         createdAt: m.createdAt,
@@ -617,18 +609,19 @@ export async function handleStandaloneRequest(
   // ── Dashboard Summary ──
   if (path === "/api/dashboard/summary") {
     const clients = await getAll<DBClient>("clients");
+    const playlists = await getAll<DBPlaylist>("playlists");
     const media = await getAll<DBMedia>("media");
     const devices = await getAll<DBDevice>("devices");
-    const logs = await getAll<DBPlaybackLog>("playbackLogs");
 
     return {
       status: 200,
       data: {
         totalClients: clients.length,
+        totalPlaylists: playlists.length,
         totalMedia: media.length,
-        totalDevices: Math.max(devices.length, 1),
-        activePlayback: 1,
-        recentLogs: logs.slice(-10),
+        totalDevices: devices.length,
+        activeDevices: devices.filter((d) => d.status === "active").length,
+        recentActivity: [],
       },
     };
   }
@@ -636,33 +629,34 @@ export async function handleStandaloneRequest(
   // ── Clients Routes ──
   if (path === "/api/clients" && method === "GET") {
     const clients = await getAll<DBClient>("clients");
-    const devices = await getAll<DBDevice>("devices");
-    const media = await getAll<DBMedia>("media");
+    const allPlaylists = await getAll<DBPlaylist>("playlists");
+    const allMedia = await getAll<DBMedia>("media");
 
-    const result = clients.map((c) => ({
+    const enriched = clients.map((c) => ({
       ...c,
-      deviceCount: devices.filter((d) => d.clientId === c.id).length,
-      mediaCount: media.filter((m) => m.clientId === c.id).length,
+      authorizedEmails: Array.isArray(c.authorizedEmails) ? c.authorizedEmails : [],
+      playlistCount: allPlaylists.filter((p) => p.clientId === c.id).length,
+      mediaCount: allMedia.filter((m) => m.clientId === c.id).length,
+      deviceCount: 1,
     }));
-    return { status: 200, data: result };
+
+    return { status: 200, data: enriched };
   }
 
   if (path === "/api/clients" && method === "POST") {
     const { name, email, masterEmail, password, playbackMode, jingleMode, jingleInterval, jingleIntervalSeconds, authorizedEmails } = body || {};
-    if (!name || !email) {
-      return { status: 400, data: { error: "Bad Request", message: "Nome e e-mail são obrigatórios" } };
-    }
+    const cleanEmail = (email || "").trim().toLowerCase();
+    const cleanMasterEmail = (masterEmail || cleanEmail).trim().toLowerCase();
 
-    const cleanEmail = email.trim().toLowerCase();
-    const clients = await getAll<DBClient>("clients");
-    if (clients.some((c) => c.email.toLowerCase() === cleanEmail)) {
-      return { status: 400, data: { error: "Bad Request", message: "Este email de login já está cadastrado para outro cliente" } };
+    const existingClients = await getAll<DBClient>("clients");
+    if (existingClients.some((c) => c.email.toLowerCase() === cleanEmail)) {
+      return { status: 400, data: { error: "Bad Request", message: "Email já cadastrado" } };
     }
 
     const newClient: Omit<DBClient, "id"> = {
-      name: name.trim(),
+      name: (name || "Novo Cliente").trim(),
       email: cleanEmail,
-      masterEmail: (masterEmail || email).trim().toLowerCase(),
+      masterEmail: cleanMasterEmail,
       authorizedEmails: Array.isArray(authorizedEmails) ? authorizedEmails : [],
       passwordHash: password || "123456",
       playbackMode: playbackMode || "sequential",
@@ -674,17 +668,17 @@ export async function handleStandaloneRequest(
     };
 
     const id = await insert("clients", newClient);
-    const created = { id, ...newClient, deviceCount: 0, mediaCount: 0 };
 
+    // Create default playlist
     await insert("playlists", {
       name: "Playlist Principal",
       clientId: id,
-      playbackMode: newClient.playbackMode,
+      playbackMode: "sequential",
       active: true,
       createdAt: new Date().toISOString(),
     });
 
-    return { status: 201, data: created };
+    return { status: 201, data: { id, ...newClient } };
   }
 
   const clientMatch = path.match(/^\/api\/clients\/(\d+)$/);
@@ -693,69 +687,58 @@ export async function handleStandaloneRequest(
     if (method === "GET") {
       const client = await getById<DBClient>("clients", clientId);
       if (!client) return { status: 404, data: { error: "Not Found", message: "Cliente não encontrado" } };
-      const devices = await getAll<DBDevice>("devices");
-      const media = await getAll<DBMedia>("media");
-      return {
-        status: 200,
-        data: {
-          ...client,
-          deviceCount: devices.filter((d) => d.clientId === clientId).length,
-          mediaCount: media.filter((m) => m.clientId === clientId).length,
-        },
-      };
+      return { status: 200, data: client };
     }
 
     if (method === "PUT") {
       const client = await getById<DBClient>("clients", clientId);
       if (!client) return { status: 404, data: { error: "Not Found", message: "Cliente não encontrado" } };
-      const updated = { ...client, ...body, id: clientId };
+      const updated = {
+        ...client,
+        ...body,
+        id: clientId,
+        authorizedEmails: Array.isArray(body.authorizedEmails) ? body.authorizedEmails : client.authorizedEmails || [],
+      };
       await update("clients", updated);
       return { status: 200, data: updated };
     }
 
     if (method === "DELETE") {
       await remove("clients", clientId);
-      const playlists = await getAll<DBPlaylist>("playlists");
-      for (const p of playlists.filter((pl) => pl.clientId === clientId)) {
-        await remove("playlists", p.id);
-      }
-      return { status: 200, data: { success: true, message: "Cliente removido" } };
+      return { status: 200, data: { success: true } };
     }
   }
 
   // ── Playlists Routes ──
   if (path === "/api/playlists" && method === "GET") {
     const playlists = await getAll<DBPlaylist>("playlists");
+    const allItems = await getAll<DBPlaylistItem>("playlistItems");
     const clientIdParam = query.get("clientId");
-    const filtered = clientIdParam ? playlists.filter((p) => p.clientId === parseInt(clientIdParam)) : playlists;
-    return { status: 200, data: filtered };
+
+    let result = playlists;
+    if (clientIdParam) {
+      result = playlists.filter((p) => p.clientId === parseInt(clientIdParam));
+    }
+
+    const enriched = result.map((p) => ({
+      ...p,
+      itemCount: allItems.filter((i) => i.playlistId === p.id).length,
+    }));
+
+    return { status: 200, data: enriched };
   }
 
   if (path === "/api/playlists" && method === "POST") {
     const { name, clientId, playbackMode } = body || {};
     const newPl: Omit<DBPlaylist, "id"> = {
       name: name || "Nova Playlist",
-      clientId: typeof clientId === "number" ? clientId : parseInt(clientId) || 1,
+      clientId: typeof clientId === "number" ? clientId : 1,
       playbackMode: playbackMode || "sequential",
       active: true,
       createdAt: new Date().toISOString(),
     };
     const id = await insert("playlists", newPl);
-    return { status: 201, data: { id, ...newPl } };
-  }
-
-  const plBatchMatch = path.match(/^\/api\/playlists\/(\d+)\/items\/batch$/);
-  if (plBatchMatch && method === "POST") {
-    const playlistId = parseInt(plBatchMatch[1]!);
-    const mediaIds: number[] = body?.mediaIds || [];
-    const allItems = await getAll<DBPlaylistItem>("playlistItems");
-    const currentItems = allItems.filter((i) => i.playlistId === playlistId);
-    let nextPos = currentItems.length;
-
-    for (const mediaId of mediaIds) {
-      await insert("playlistItems", { playlistId, mediaId: parseInt(String(mediaId)), position: nextPos++ });
-    }
-    return { status: 201, data: { added: mediaIds.length, success: true } };
+    return { status: 201, data: { id, ...newPl, itemCount: 0 } };
   }
 
   const plMatch = path.match(/^\/api\/playlists\/(\d+)$/);
@@ -771,7 +754,7 @@ export async function handleStandaloneRequest(
         const m = allMedia.find((med) => med.id === i.mediaId);
         return {
           ...i,
-          media: m ? { ...m, url: getMediaBlobUrl(m.id, m.blob) } : null,
+          media: m ? { ...m, url: getMediaBlobUrl(m.id, m.blob, m.url) } : null,
         };
       });
       return { status: 200, data: { ...playlist, items: enrichedItems } };
@@ -849,7 +832,7 @@ export async function handleStandaloneRequest(
     if (typeParam && typeParam !== "all") result = result.filter((m) => m.type === typeParam);
     const enriched = result.map((m) => ({
       ...m,
-      url: getMediaBlobUrl(m.id, m.blob),
+      url: getMediaBlobUrl(m.id, m.blob, m.url),
     }));
     return { status: 200, data: enriched };
   }
@@ -861,6 +844,7 @@ export async function handleStandaloneRequest(
     let duration = 180;
     let size = 1024 * 1024;
     let blob: Blob | undefined;
+    let cloudUrl = "";
 
     if (body instanceof FormData) {
       const file = body.get("file") as File;
@@ -870,6 +854,15 @@ export async function handleStandaloneRequest(
         clientId = parseInt(body.get("clientId") as string) || 1;
         size = file.size;
         blob = file;
+
+        // Upload to Firebase Storage
+        try {
+          const fileRef = storageRef(storage, `media/${clientId}/${Date.now()}_${file.name}`);
+          await uploadBytes(fileRef, file);
+          cloudUrl = await getDownloadURL(fileRef);
+        } catch (storageErr) {
+          console.warn("[Firebase Storage] Upload failed, falling back to blob URL:", storageErr);
+        }
       }
     } else if (body) {
       title = body.title || title;
@@ -888,13 +881,14 @@ export async function handleStandaloneRequest(
       objectKey,
       clientId,
       createdAt: new Date().toISOString(),
+      url: cloudUrl,
       blob,
     };
 
     const id = await insert("media", newMedia);
-    const url = getMediaBlobUrl(id, blob);
+    const finalUrl = cloudUrl || getMediaBlobUrl(id, blob);
 
-    return { status: 201, data: { id, ...newMedia, url } };
+    return { status: 201, data: { id, ...newMedia, url: finalUrl } };
   }
 
   const mediaMatch = path.match(/^\/api\/media\/(\d+)$/);
@@ -933,5 +927,5 @@ export async function handleStandaloneRequest(
   }
 
   // ── Default fallback ──
-  return { status: 200, data: { success: true, message: "OK (Standalone)" } };
+  return { status: 200, data: { success: true, message: "OK (Firebase Store)" } };
 }

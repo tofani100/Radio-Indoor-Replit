@@ -2,6 +2,14 @@
   "projects": {
     "default": "radio-indoor-replit"
   },
-  "targets": {},
+  "targets": {
+    "radio-indoor-replit": {
+      "hosting": {
+        "app": [
+          "radio-indoor-replit"
+        ]
+      }
+    }
+  },
   "etags": {}
 }
