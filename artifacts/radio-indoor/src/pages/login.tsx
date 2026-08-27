@@ -19,8 +19,16 @@ export default function LoginPage() {
         setUser(user as { id: number; email: string; name: string; role: string });
         setLocation("/dashboard");
       },
-      onError: () => {
-        toast({ title: "Credenciais invalidas", description: "Verifique seu email e senha.", variant: "destructive" });
+      onError: (err: any) => {
+        if (err?.status === 401) {
+          toast({ title: "Credenciais inválidas", description: "Verifique seu email e senha.", variant: "destructive" });
+        } else {
+          toast({
+            title: "Servidor de backend indisponível",
+            description: err?.data?.message || err?.message || "O servidor da API não foi alcançado.",
+            variant: "destructive",
+          });
+        }
       },
     },
   });
