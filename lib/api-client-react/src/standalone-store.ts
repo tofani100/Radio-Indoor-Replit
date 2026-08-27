@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Standalone IndexedDB Store and Mock Router for Radio Indoor
  * Provides 100% autonomous client-side persistence for admins, clients, playlists, audio media blobs, and logs.
  */
@@ -134,6 +134,7 @@ export function openDB(): Promise<IDBDatabase> {
 }
 
 async function seedInitialData(db: IDBDatabase) {
+  // 1. Garantir apenas o admin correto
   const admins = await getAll<DBAdmin>("admins");
   if (admins.length === 0) {
     await insert("admins", {
@@ -143,22 +144,23 @@ async function seedInitialData(db: IDBDatabase) {
       role: "admin",
       createdAt: new Date().toISOString(),
     });
-    await insert("admins", {
-      name: "Admin Master",
-      email: "tofani100@gmail.com",
-      passwordHash: "admin123",
-      role: "admin",
-      createdAt: new Date().toISOString(),
-    });
+  } else {
+    // Remove qualquer outro admin residual
+    for (const a of admins) {
+      if (a.email.toLowerCase() !== "admin@radioindoor.com") {
+        await remove("admins", a.id);
+      }
+    }
   }
 
+  // 2. Garantir cliente inicial padrão se banco estiver vazio
   const clients = await getAll<DBClient>("clients");
   if (clients.length === 0) {
-    const initialClient: Omit<DBClient, "id"> = {
+    const clientId = await insert("clients", {
       name: "Cliente Matriz",
       email: "cliente@radioindoor.com",
       masterEmail: "cliente@radioindoor.com",
-      authorizedEmails: [],
+      authorizedEmails: ["tofani100@gmail.com"],
       passwordHash: "cliente123",
       playbackMode: "sequential",
       jingleMode: "interval",
@@ -166,8 +168,9 @@ async function seedInitialData(db: IDBDatabase) {
       jingleIntervalSeconds: 900,
       active: true,
       createdAt: new Date().toISOString(),
-    };
-    const clientId = await insert("clients", initialClient);
+    });
+
+    // Criar playlist principal padrão
     await insert("playlists", {
       name: "Playlist Principal",
       clientId,
@@ -304,9 +307,9 @@ export async function handleStandaloneRequest(
       }
     }
 
-    // 2. Fallback check for default admin aliases
-    if ((email === "admin@radioindoor.com" || email === "admin" || email === "tofani100@gmail.com") && (password === "admin123" || password === "password" || password.length > 0)) {
-      const adminUser = { id: 1, email: email === "tofani100@gmail.com" ? "tofani100@gmail.com" : "admin@radioindoor.com", name: "Administrador Master", role: "admin" };
+    // 2. Fallback check for default admin
+    if ((email === "admin@radioindoor.com" || email === "admin") && (password === "admin123" || password === "password" || password.length > 0)) {
+      const adminUser = { id: 1, email: "admin@radioindoor.com", name: "Administrador", role: "admin" };
       setSessionUser(adminUser);
       return { status: 200, data: adminUser };
     }
@@ -398,32 +401,60 @@ export async function handleStandaloneRequest(
   // ── Devices Registration (Player Gatekeeper) ──
   if (path === "/api/devices/register" || path === "/api/devices/pair" || (path === "/api/devices" && method === "POST")) {
     const email = (body?.email || "").trim().toLowerCase();
-    const uuid = body?.uuid || "";
-    const clients = await getAll<DBClient>("clients");
+    const uuid = (body?.uuid || "").trim();
 
-    let matchedClient = clients.find((c) => {
-      if (c.email.toLowerCase() === email) return true;
-      if (c.masterEmail.toLowerCase() === email) return true;
+    if (!email) {
+      return { status: 400, data: { error: "Bad Request", message: "Email é obrigatório" } };
+    }
+
+    const clients = await getAll<DBClient>("clients");
+    const activeClients = clients.filter((c) => c.active);
+
+    // 1. Check if email is in masterEmail or authorizedEmails of any active client
+    const authorizedClient = activeClients.find((c) => {
+      if (c.masterEmail && c.masterEmail.toLowerCase() === email) return true;
       if (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === email)) return true;
       return false;
     });
 
-    if (!matchedClient && clients.length > 0) {
-      matchedClient = clients[0];
-      if (email && matchedClient && !matchedClient.authorizedEmails.includes(email)) {
-        matchedClient.authorizedEmails.push(email);
-        await update("clients", matchedClient);
-      }
+    if (authorizedClient) {
+      return {
+        status: 200,
+        data: {
+          status: "active",
+          registered: true,
+          clientId: authorizedClient.id,
+          clientName: authorizedClient.name,
+          deviceId: 1,
+          message: "Acesso autorizado ao Player",
+        },
+      };
     }
 
+    // 2. Check if email matches login email of an active client (requires manual approval)
+    const loginClient = activeClients.find((c) => c.email && c.email.toLowerCase() === email);
+    if (loginClient) {
+      return {
+        status: 200,
+        data: {
+          status: "pending",
+          registered: true,
+          clientId: loginClient.id,
+          clientName: loginClient.name,
+          deviceId: 1,
+          message: "Aguardando aprovação do administrador",
+        },
+      };
+    }
+
+    // 3. Email is NOT registered in any client -> Reject with pending / unauthorized status
     return {
       status: 200,
       data: {
-        status: "active",
-        clientId: matchedClient?.id || 1,
-        clientName: matchedClient?.name || "Cliente",
-        deviceId: 1,
-        message: "Acesso autorizado ao Player",
+        status: "pending",
+        registered: false,
+        clientId: null,
+        message: "E-mail não cadastrado. Peça autorização ao administrador para liberar seu acesso.",
       },
     };
   }
@@ -439,30 +470,45 @@ export async function handleStandaloneRequest(
     const clientIdParam = query.get("clientId");
     const requestedPlaylistId = query.get("playlistId") ? parseInt(query.get("playlistId")!) : null;
 
+    if (!emailParam && !clientIdParam) {
+      return { status: 400, data: { error: "Bad Request", message: "Email ou clientId é obrigatório" } };
+    }
+
     const clients = await getAll<DBClient>("clients");
-    let client = clients.find((c) => {
+    const activeClients = clients.filter((c) => c.active);
+
+    const client = activeClients.find((c) => {
       if (clientIdParam && c.id === parseInt(clientIdParam)) return true;
       if (emailParam) {
-        if (c.email.toLowerCase() === emailParam) return true;
-        if (c.masterEmail.toLowerCase() === emailParam) return true;
+        if (c.masterEmail && c.masterEmail.toLowerCase() === emailParam) return true;
         if (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === emailParam)) return true;
       }
       return false;
-    }) || clients[0];
+    });
 
-    const targetClientId = client?.id || 1;
+    if (!client) {
+      return {
+        status: 403,
+        data: {
+          error: "Forbidden",
+          message: "E-mail não cadastrado ou não autorizado a acessar playlists.",
+        },
+      };
+    }
+
+    const targetClientId = client.id;
     const allPlaylists = await getAll<DBPlaylist>("playlists");
-    const clientPlaylists = allPlaylists.filter((p) => p.clientId === targetClientId);
+    const clientPlaylists = allPlaylists.filter((p) => p.clientId === targetClientId && p.active);
 
     let activePlaylist = requestedPlaylistId
       ? clientPlaylists.find((p) => p.id === requestedPlaylistId)
-      : clientPlaylists.find((p) => p.active) || clientPlaylists[0] || allPlaylists[0];
+      : clientPlaylists[0];
 
     if (!activePlaylist) {
       const plId = await insert("playlists", {
         name: "Playlist Principal",
         clientId: targetClientId,
-        playbackMode: client?.playbackMode || "sequential",
+        playbackMode: client.playbackMode || "sequential",
         active: true,
         createdAt: new Date().toISOString(),
       });
@@ -513,10 +559,10 @@ export async function handleStandaloneRequest(
         deviceId: 1,
         playlistId: activePlaylist.id,
         currentIndex: 0,
-        playbackMode: client?.playbackMode || "sequential",
-        jingleMode: client?.jingleMode || "interval",
-        jingleInterval: client?.jingleInterval || 3,
-        jingleIntervalSeconds: client?.jingleIntervalSeconds || 900,
+        playbackMode: client.playbackMode || "sequential",
+        jingleMode: client.jingleMode || "interval",
+        jingleInterval: client.jingleInterval || 3,
+        jingleIntervalSeconds: client.jingleIntervalSeconds || 900,
         musicVolume: 1,
         jingleVolume: 1,
         items: queueItems,
@@ -528,18 +574,29 @@ export async function handleStandaloneRequest(
   if (path === "/api/playback/playlists" || path.startsWith("/api/playback/playlists")) {
     const emailParam = (query.get("email") || "").trim().toLowerCase();
     const clients = await getAll<DBClient>("clients");
-    const client = clients.find((c) => {
+    const activeClients = clients.filter((c) => c.active);
+
+    const client = activeClients.find((c) => {
       if (emailParam) {
-        if (c.email.toLowerCase() === emailParam) return true;
-        if (c.masterEmail.toLowerCase() === emailParam) return true;
+        if (c.masterEmail && c.masterEmail.toLowerCase() === emailParam) return true;
         if (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === emailParam)) return true;
       }
       return false;
-    }) || clients[0];
+    });
 
-    const targetClientId = client?.id || 1;
+    if (!client) {
+      return {
+        status: 403,
+        data: {
+          error: "Forbidden",
+          message: "E-mail não cadastrado ou não autorizado.",
+        },
+      };
+    }
+
+    const targetClientId = client.id;
     const allPlaylists = await getAll<DBPlaylist>("playlists");
-    const clientPlaylists = allPlaylists.filter((p) => p.clientId === targetClientId);
+    const clientPlaylists = allPlaylists.filter((p) => p.clientId === targetClientId && p.active);
     const allItems = await getAll<DBPlaylistItem>("playlistItems");
 
     const result = clientPlaylists.map((p) => ({
@@ -755,12 +812,13 @@ export async function handleStandaloneRequest(
 
   const plReorderMatch = path.match(/^\/api\/playlists\/(\d+)\/reorder$/);
   if (plReorderMatch && method === "PUT") {
-    const itemIds: number[] = body?.itemIds || [];
+    const itemIds: (number | string)[] = body?.itemIds || [];
     const items = body?.items || [];
 
     if (itemIds.length > 0) {
       for (let pos = 0; pos < itemIds.length; pos++) {
-        const itemId = itemIds[pos]!;
+        const itemId = Number(itemIds[pos]);
+        if (isNaN(itemId)) continue;
         const existing = await getById<DBPlaylistItem>("playlistItems", itemId);
         if (existing) {
           await update("playlistItems", { ...existing, position: pos });
@@ -768,8 +826,10 @@ export async function handleStandaloneRequest(
       }
     } else if (items.length > 0) {
       for (const it of items) {
-        if (it.id && typeof it.position === "number") {
-          const existing = await getById<DBPlaylistItem>("playlistItems", it.id);
+        if (it.id !== undefined && typeof it.position === "number") {
+          const itemId = Number(it.id);
+          if (isNaN(itemId)) continue;
+          const existing = await getById<DBPlaylistItem>("playlistItems", itemId);
           if (existing) {
             await update("playlistItems", { ...existing, position: it.position });
           }

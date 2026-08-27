@@ -20,108 +20,109 @@ router.post("/devices/register", async (req, res) => {
     return;
   }
 
-  // Check if device already exists
-  const [existing] = await db.select().from(devicesTable).where(eq(devicesTable.uuid, uuid)).limit(1);
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanUuid = uuid.trim();
+
+  // Find all active clients
+  const allClients = await db.select().from(clientsTable).where(eq(clientsTable.active, true));
+
+  const matchAuthorized = allClients.find(
+    (c) =>
+      c.masterEmail.toLowerCase() === cleanEmail ||
+      (c.authorizedEmails ?? []).some((e) => e.toLowerCase() === cleanEmail),
+  ) ?? null;
+
+  const matchLogin = !matchAuthorized
+    ? allClients.find((c) => c.email.toLowerCase() === cleanEmail) ?? null
+    : null;
+
+  const resolvedClient = matchAuthorized ?? matchLogin ?? null;
+
+  // Check if device already exists by UUID
+  const [existing] = await db.select().from(devicesTable).where(eq(devicesTable.uuid, cleanUuid)).limit(1);
+
   if (existing) {
-    // If the email submitted now differs from what we stored (e.g. user mistyped
-    // the first time, or browser autofill put the wrong email), update the email
-    // so the device row reflects who is actually using this browser. This also
-    // lets the device move from pending/blocked to active if the new email is
-    // whitelisted by an active client.
-    const submittedNormalized = email.trim().toLowerCase();
-    const storedNormalized = (existing.email ?? "").trim().toLowerCase();
-    if (submittedNormalized && submittedNormalized !== storedNormalized) {
-      const allClientsForUpdate = await db.select().from(clientsTable);
-      const matchAuthorized = allClientsForUpdate.find(
-        (c) =>
-          c.active &&
-          (c.masterEmail.toLowerCase() === submittedNormalized ||
-            (c.authorizedEmails ?? []).some((e) => e.toLowerCase() === submittedNormalized)),
-      ) ?? null;
-      const matchLogin = !matchAuthorized
-        ? allClientsForUpdate.find((c) => c.email.toLowerCase() === submittedNormalized) ?? null
-        : null;
-      const newClient = matchAuthorized ?? matchLogin ?? null;
-      const newStatus = matchAuthorized ? "active" : (existing.status === "blocked" ? "blocked" : "pending");
-      const [updated] = await db
-        .update(devicesTable)
-        .set({ email, status: newStatus, clientId: newClient?.id ?? null, lastSeen: new Date() })
-        .where(eq(devicesTable.uuid, uuid))
-        .returning();
-      const updMsgs: Record<string, string> = {
-        active: "Device authorized",
-        pending: "Waiting for admin approval",
-        blocked: "Device access has been blocked",
-      };
-      res.json({ status: updated.status, message: updMsgs[updated.status] ?? "Unknown", clientId: updated.clientId });
+    if (existing.status === "blocked") {
+      res.json({ status: "blocked", message: "Device access has been blocked", clientId: existing.clientId });
       return;
     }
+
+    const newStatus = matchAuthorized ? "active" : "pending";
+    const [updated] = await db
+      .update(devicesTable)
+      .set({
+        email: cleanEmail,
+        status: newStatus,
+        clientId: resolvedClient?.id ?? null,
+        lastSeen: new Date(),
+      })
+      .where(eq(devicesTable.id, existing.id))
+      .returning();
+
     const messages: Record<string, string> = {
       active: "Device authorized",
-      pending: "Waiting for admin approval",
+      pending: resolvedClient ? "Waiting for admin approval" : "E-mail não cadastrado. Peça autorização ao administrador.",
       blocked: "Device access has been blocked",
     };
-    res.json({ status: existing.status, message: messages[existing.status] ?? "Unknown", clientId: existing.clientId });
+
+    res.json({
+      status: updated.status,
+      message: messages[updated.status] ?? "Unknown",
+      clientId: updated.clientId,
+      registered: !!resolvedClient,
+    });
     return;
   }
 
-  // Find client by login email, master email, or any pre-authorized email.
-  // Only ACTIVE clients participate in auto-approval — devices for inactive
-  // clients still register but go to pending so the admin can review.
-  // Precedence: explicit whitelist (masterEmail / authorizedEmails) wins
-  // over the login email. So a device whose email is whitelisted is always
-  // auto-approved, even if it happens to also be a login email.
-  const normalizedEmail = email.trim().toLowerCase();
-  const allClients = await db.select().from(clientsTable);
-
-  const byAuthorized = allClients.find(
-    (c) =>
-      c.active &&
-      (c.masterEmail.toLowerCase() === normalizedEmail ||
-        (c.authorizedEmails ?? []).some((e) => e.toLowerCase() === normalizedEmail)),
-  ) ?? null;
-
-  const byLogin = !byAuthorized
-    ? allClients.find((c) => c.email.toLowerCase() === normalizedEmail) ?? null
-    : null;
-
-  const resolvedClient = byAuthorized ?? byLogin ?? null;
-  const status = byAuthorized ? "active" : "pending";
-
-  // If another device row already exists for this email, re-use it (update the
-  // UUID to the current browser's UUID) instead of inserting a duplicate row.
-  // This prevents the same store email from accumulating multiple device rows
-  // each time the browser's localStorage is cleared.
+  // Check if another device row exists for this email
   const [existingByEmail] = await db
     .select()
     .from(devicesTable)
-    .where(eq(devicesTable.email, email.trim()))
+    .where(eq(devicesTable.email, cleanEmail))
     .orderBy(devicesTable.id)
     .limit(1);
 
   if (existingByEmail) {
-    // Preserve the existing approval status unless a new client match improves it.
-    const newStatus = byAuthorized ? "active" : (existingByEmail.status === "blocked" ? "blocked" : existingByEmail.status);
+    if (existingByEmail.status === "blocked") {
+      res.json({ status: "blocked", message: "Device access has been blocked", clientId: existingByEmail.clientId });
+      return;
+    }
+
+    const newStatus = matchAuthorized ? "active" : "pending";
     const [updated] = await db
       .update(devicesTable)
-      .set({ uuid, status: newStatus, clientId: resolvedClient?.id ?? existingByEmail.clientId, lastSeen: new Date() })
+      .set({
+        uuid: cleanUuid,
+        status: newStatus,
+        clientId: resolvedClient?.id ?? null,
+        lastSeen: new Date(),
+      })
       .where(eq(devicesTable.id, existingByEmail.id))
       .returning();
+
     const messages: Record<string, string> = {
       active: "Device authorized",
-      pending: "Waiting for admin approval",
+      pending: resolvedClient ? "Waiting for admin approval" : "E-mail não cadastrado. Peça autorização ao administrador.",
       blocked: "Device access has been blocked",
     };
-    res.json({ status: updated.status, message: messages[updated.status] ?? "Unknown", clientId: updated.clientId });
+
+    res.json({
+      status: updated.status,
+      message: messages[updated.status] ?? "Unknown",
+      clientId: updated.clientId,
+      registered: !!resolvedClient,
+    });
     return;
   }
 
+  // New device
+  const initialStatus = matchAuthorized ? "active" : "pending";
   const [device] = await db
     .insert(devicesTable)
     .values({
-      uuid,
-      email,
-      status,
+      uuid: cleanUuid,
+      email: cleanEmail,
+      status: initialStatus,
       clientId: resolvedClient?.id ?? null,
       lastSeen: new Date(),
     })
@@ -129,8 +130,13 @@ router.post("/devices/register", async (req, res) => {
 
   res.json({
     status: device.status,
-    message: status === "active" ? "Device authorized" : "Waiting for admin approval",
+    message: matchAuthorized
+      ? "Device authorized"
+      : resolvedClient
+        ? "Waiting for admin approval"
+        : "E-mail não cadastrado. Peça autorização ao administrador.",
     clientId: device.clientId,
+    registered: !!resolvedClient,
   });
 });
 

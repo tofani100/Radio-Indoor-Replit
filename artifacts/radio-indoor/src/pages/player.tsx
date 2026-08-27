@@ -151,7 +151,7 @@ export default function PlayerPage() {
   const logPlayback = useLogPlayback({ mutation: {} });
 
   const queueParams = { uuid, email, ...(selectedPlaylistId ? { playlistId: selectedPlaylistId } : {}) };
-  const { data: queue, refetch: refetchQueue } = useGetPlaybackQueue(
+  const { data: queue, refetch: refetchQueue, error: queueError } = useGetPlaybackQueue(
     queueParams,
     {
       query: {
@@ -161,6 +161,15 @@ export default function PlayerPage() {
       },
     }
   );
+
+  useEffect(() => {
+    if (queueError) {
+      const errStatus = (queueError as any)?.status;
+      if (errStatus === 403 || errStatus === 401) {
+        setPlayerState("pending");
+      }
+    }
+  }, [queueError]);
 
   // Fetch all active playlists for this device's client (only when player is active)
   const playlistsParams = { uuid, email };
@@ -658,24 +667,27 @@ export default function PlayerPage() {
           <div className="w-16 h-16 rounded-2xl bg-amber-500/20 flex items-center justify-center mx-auto mb-6">
             <Clock className="w-8 h-8 text-amber-400" />
           </div>
-          <h1 className="text-xl font-semibold text-sidebar-foreground mb-2">Aguardando Aprovacao</h1>
-          <p className="text-sm text-sidebar-foreground/50 mb-3">Seu acesso esta sendo analisado pelo administrador.</p>
-          <div className="bg-sidebar-accent/40 border border-sidebar-border rounded-xl px-4 py-3 mb-3">
-            <p className="text-[10px] uppercase tracking-widest text-sidebar-foreground/40 mb-1">Conectado como</p>
+          <h1 className="text-xl font-semibold text-sidebar-foreground mb-2">Aguardando Autorização</h1>
+          <p className="text-sm text-sidebar-foreground/70 mb-2">
+            Este e-mail ainda não está cadastrado ou autorizado no sistema.
+          </p>
+          <p className="text-xs text-sidebar-foreground/50 mb-4">
+            Peça ao administrador para cadastrar ou liberar seu e-mail no painel de clientes.
+          </p>
+          <div className="bg-sidebar-accent/40 border border-sidebar-border rounded-xl px-4 py-3 mb-4">
+            <p className="text-[10px] uppercase tracking-widest text-sidebar-foreground/40 mb-1">E-mail informado</p>
             <p className="text-sm font-mono text-sidebar-foreground break-all">{email}</p>
           </div>
           <button
             data-testid="button-pending-switch"
             type="button"
             onClick={() => {
-              if (confirm(`O email "${email}" esta correto? Se NAO for voce, clique OK para limpar e digitar o email correto. Um novo dispositivo sera criado.`)) {
-                clearDeviceIdentity();
-                window.location.reload();
-              }
+              clearDeviceIdentity();
+              window.location.reload();
             }}
             className="text-xs text-sidebar-primary underline underline-offset-4 hover:opacity-80"
           >
-            Nao sou eu — trocar email
+            Trocar e-mail
           </button>
           <div className="flex gap-1 justify-center mt-6">
             {[0, 1, 2].map((i) => (

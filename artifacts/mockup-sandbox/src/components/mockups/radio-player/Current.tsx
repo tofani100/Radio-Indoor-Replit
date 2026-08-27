@@ -59,7 +59,7 @@ export function Current() {
         </div>
         <span className="text-sm font-medium text-sidebar-foreground">Radio Indoor</span>
         <span className="ml-auto text-xs text-sidebar-foreground/30 truncate max-w-[40%]">
-          tofani100@gmail.com
+          admin@radioindoor.com
         </span>
       </div>
 

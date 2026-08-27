@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useParams, useLocation } from "wouter";
 import { ArrowLeft, GripVertical, Plus, Trash2, Music, Mic, ToggleLeft, ToggleRight, Search, CheckSquare, Square, Loader2, Settings2 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
@@ -24,20 +24,34 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
-function SortableItem({ item, onRemove }: { item: any; onRemove: () => void }) {
+function SortableItem({ item, index, onRemove }: { item: any; index: number; onRemove: () => void }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
-  const style = { transform: CSS.Transform.toString(transform), transition };
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 50 : undefined,
+    position: "relative" as const,
+  };
   return (
     <div
       ref={setNodeRef}
       style={style}
       data-testid={`playlist-item-${item.id}`}
-      className={cn("flex items-center gap-3 px-4 py-3 bg-card border border-card-border rounded-lg", isDragging && "opacity-50 shadow-lg")}
+      className={cn(
+        "flex items-center gap-3 px-4 py-3 bg-card border border-card-border rounded-lg transition-colors select-none",
+        isDragging && "opacity-75 shadow-xl border-primary ring-2 ring-primary/20 bg-muted/90"
+      )}
     >
-      <button {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground p-0.5">
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        className="cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground p-1 rounded hover:bg-muted touch-none"
+        title="Arrastar para reordenar"
+      >
         <GripVertical className="w-4 h-4" />
       </button>
-      <span className="text-xs text-muted-foreground/50 font-mono w-4">{item.position + 1}</span>
+      <span className="text-xs text-muted-foreground/50 font-mono w-5 text-center">{index + 1}</span>
       <div className={cn("w-6 h-6 rounded flex items-center justify-center flex-none", item.media?.type === "music" ? "bg-blue-500/10 text-blue-600" : "bg-purple-500/10 text-purple-600")}>
         {item.media?.type === "music" ? <Music className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
       </div>
@@ -86,6 +100,14 @@ export default function PlaylistDetailPage() {
   });
 
   const { data: playlist, isLoading } = useGetPlaylist(playlistId, { query: { queryKey: getGetPlaylistQueryKey(playlistId) } });
+  const [localItems, setLocalItems] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (playlist?.items) {
+      setLocalItems(playlist.items);
+    }
+  }, [playlist?.items]);
+
   const { data: allMedia } = useListMedia({}, { query: { queryKey: getListMediaQueryKey({}) } });
   const { data: clients } = useListClients({ query: { queryKey: getListClientsQueryKey() } });
   const currentClient = useMemo(
@@ -103,11 +125,25 @@ export default function PlaylistDetailPage() {
     },
   });
 
-  const sensors = useSensors(useSensor(PointerSensor), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 5,
+      },
+    }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
 
   const inv = () => qc.invalidateQueries({ queryKey: getGetPlaylistQueryKey(playlistId) });
 
-  const reorder = useReorderPlaylistItems({ mutation: { onError: () => toast({ title: "Erro ao reordenar", variant: "destructive" }) } });
+  const reorder = useReorderPlaylistItems({
+    mutation: {
+      onError: () => {
+        toast({ title: "Erro ao reordenar", variant: "destructive" });
+        inv();
+      },
+    },
+  });
   const remove = useRemovePlaylistItem({ mutation: { onSuccess: () => { toast({ title: "Faixa removida" }); inv(); }, onError: () => toast({ title: "Erro", variant: "destructive" }) } });
   const addBatch = useAddPlaylistItemsBatch({
     mutation: {
@@ -130,12 +166,37 @@ export default function PlaylistDetailPage() {
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
-    if (!over || active.id === over.id || !playlist) return;
-    const items = playlist.items ?? [];
-    const oldIdx = items.findIndex((i) => i.id === active.id);
-    const newIdx = items.findIndex((i) => i.id === over.id);
-    const newOrder = arrayMove(items, oldIdx, newIdx);
-    reorder.mutate({ playlistId, data: { itemIds: newOrder.map((i) => i.id) } });
+    if (!over || active.id === over.id || !localItems.length) return;
+    const oldIdx = localItems.findIndex((i) => i.id === active.id);
+    const newIdx = localItems.findIndex((i) => i.id === over.id);
+    if (oldIdx === -1 || newIdx === -1) return;
+
+    const newOrder = arrayMove(localItems, oldIdx, newIdx).map((item, idx) => ({
+      ...item,
+      position: idx,
+    }));
+
+    // Atualização otimista imediata para fixar a posição visualmente
+    setLocalItems(newOrder);
+    qc.setQueryData(getGetPlaylistQueryKey(playlistId), (old: any) => {
+      if (!old) return old;
+      return { ...old, items: newOrder };
+    });
+
+    // Salva no backend / banco de dados
+    reorder.mutate(
+      { playlistId, data: { itemIds: newOrder.map((i) => i.id) } },
+      {
+        onSuccess: () => {
+          toast({ title: "Ordem da playlist salva com sucesso" });
+          inv();
+        },
+        onError: () => {
+          toast({ title: "Erro ao salvar ordem", variant: "destructive" });
+          inv();
+        },
+      }
+    );
   };
 
   const existingMediaIds = useMemo(
@@ -256,18 +317,19 @@ export default function PlaylistDetailPage() {
         </div>
       </div>
 
-      {!playlist.items?.length ? (
+      {!localItems.length ? (
         <div className="bg-card border border-card-border rounded-xl px-5 py-12 text-center text-muted-foreground">
-          Nenhuma faixa na playlist. Clique em "Adicionar" para incluir midias.
+          Nenhuma faixa na playlist. Clique em "Adicionar" para incluir mídias.
         </div>
       ) : (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <SortableContext items={(playlist.items ?? []).map((i) => i.id)} strategy={verticalListSortingStrategy}>
+          <SortableContext items={localItems.map((i) => i.id)} strategy={verticalListSortingStrategy}>
             <div className="space-y-2">
-              {(playlist.items ?? []).map((item) => (
+              {localItems.map((item, idx) => (
                 <SortableItem
                   key={item.id}
                   item={item}
+                  index={idx}
                   onRemove={() => remove.mutate({ playlistId, itemId: item.id })}
                 />
               ))}

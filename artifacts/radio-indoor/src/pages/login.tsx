@@ -13,28 +13,8 @@ export default function LoginPage() {
   const { setUser } = useAuth();
   const { toast } = useToast();
 
-  // Preenche apenas se este navegador foi previamente autenticado como tofani100@gmail.com
-  const [email, setEmail] = useState(() => {
-    try {
-      const isMaster =
-        localStorage.getItem("radio_indoor_trusted_admin") === "tofani100@gmail.com" ||
-        localStorage.getItem("radio_indoor_email") === "tofani100@gmail.com";
-      return isMaster ? "admin@radioindoor.com" : "";
-    } catch {
-      return "";
-    }
-  });
-
-  const [password, setPassword] = useState(() => {
-    try {
-      const isMaster =
-        localStorage.getItem("radio_indoor_trusted_admin") === "tofani100@gmail.com" ||
-        localStorage.getItem("radio_indoor_email") === "tofani100@gmail.com";
-      return isMaster ? "admin123" : "";
-    } catch {
-      return "";
-    }
-  });
+  const [email, setEmail] = useState("admin@radioindoor.com");
+  const [password, setPassword] = useState("admin123");
 
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -43,7 +23,7 @@ export default function LoginPage() {
     mutation: {
       onSuccess: (user) => {
         try {
-          localStorage.setItem("radio_indoor_trusted_admin", "tofani100@gmail.com");
+          localStorage.setItem("radio_indoor_trusted_admin", "admin@radioindoor.com");
         } catch {
           // ignore
         }
@@ -65,7 +45,7 @@ export default function LoginPage() {
       const res = await handleStandaloneRequest("/api/auth/login", "POST", { email, password });
       if (res.status === 200 && res.data) {
         try {
-          localStorage.setItem("radio_indoor_trusted_admin", "tofani100@gmail.com");
+          localStorage.setItem("radio_indoor_trusted_admin", "admin@radioindoor.com");
         } catch {
           // ignore
         }

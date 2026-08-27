@@ -6,19 +6,66 @@ const router = Router();
 
 /** Shared helper: verify device is active and return device + client */
 async function resolveDevice(uuid: string, email: string) {
+  const cleanEmail = (email ?? "").trim().toLowerCase();
+  const cleanUuid = (uuid ?? "").trim();
+  if (!cleanUuid || !cleanEmail) {
+    return { error: "Bad Request", message: "uuid and email required" };
+  }
+
+  // Find active client matching this email
+  const allClients = await db.select().from(clientsTable).where(eq(clientsTable.active, true));
+
+  const client = allClients.find(
+    (c) =>
+      c.masterEmail.toLowerCase() === cleanEmail ||
+      (c.authorizedEmails ?? []).some((e) => e.toLowerCase() === cleanEmail),
+  );
+
+  // Check device in DB
   const [device] = await db
     .select()
     .from(devicesTable)
-    .where(and(eq(devicesTable.uuid, uuid), eq(devicesTable.email, email)))
+    .where(eq(devicesTable.uuid, cleanUuid))
     .limit(1);
 
-  if (!device || device.status !== "active") return { error: "Forbidden", message: "Device not authorized" };
-  if (!device.clientId) return { error: "Forbidden", message: "Device not associated with a client" };
+  if (device && device.status === "blocked") {
+    return { error: "Forbidden", message: "Dispositivo bloqueado pelo administrador" };
+  }
 
-  const [client] = await db.select().from(clientsTable).where(eq(clientsTable.id, device.clientId)).limit(1);
-  if (!client) return { error: "Not Found", message: "Client not found" };
+  if (client) {
+    // If email is directly authorized on active client, auto-ensure device is active and associated
+    if (device) {
+      if (device.status !== "active" || device.clientId !== client.id || device.email.toLowerCase() !== cleanEmail) {
+        await db
+          .update(devicesTable)
+          .set({ status: "active", clientId: client.id, email: cleanEmail, lastSeen: new Date() })
+          .where(eq(devicesTable.id, device.id));
+        device.status = "active";
+        device.clientId = client.id;
+      }
+      return { device, client };
+    } else {
+      const [newDev] = await db
+        .insert(devicesTable)
+        .values({ uuid: cleanUuid, email: cleanEmail, status: "active", clientId: client.id, lastSeen: new Date() })
+        .returning();
+      return { device: newDev, client };
+    }
+  }
 
-  return { device, client };
+  // If not auto-authorized via master/authorized emails, check if device was manually approved for a client
+  if (device && device.status === "active" && device.clientId) {
+    const [assignedClient] = await db
+      .select()
+      .from(clientsTable)
+      .where(and(eq(clientsTable.id, device.clientId), eq(clientsTable.active, true)))
+      .limit(1);
+    if (assignedClient && (device.email.toLowerCase() === cleanEmail || assignedClient.email.toLowerCase() === cleanEmail)) {
+      return { device, client: assignedClient };
+    }
+  }
+
+  return { error: "Forbidden", message: "E-mail não cadastrado ou dispositivo não autorizado" };
 }
 
 // Public - list all active playlists for the device's client
