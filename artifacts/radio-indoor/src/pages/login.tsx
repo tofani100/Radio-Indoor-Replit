@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { Radio, Eye, EyeOff } from "lucide-react";
-import { useAdminLogin } from "@workspace/api-client-react";
+import { useAdminLogin, handleStandaloneRequest } from "@workspace/api-client-react";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 
@@ -12,6 +12,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("admin@radioindoor.com");
   const [password, setPassword] = useState("admin123");
   const [showPassword, setShowPassword] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const login = useAdminLogin({
     mutation: {
@@ -27,9 +28,28 @@ export default function LoginPage() {
     },
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    login.mutate({ data: { email, password } });
+    setIsSubmitting(true);
+    try {
+      const res = await handleStandaloneRequest("/api/auth/login", "POST", { email, password });
+      if (res.status === 200 && res.data) {
+        setUser(res.data as { id: number; email: string; name: string; role: string });
+        toast({ title: "Bem-vindo!", description: "Acesso administrativo liberado." });
+        setLocation("/dashboard");
+        setIsSubmitting(false);
+        return;
+      }
+    } catch (standaloneErr) {
+      console.warn("Direct standalone login:", standaloneErr);
+    }
+
+    login.mutate(
+      { data: { email, password } },
+      {
+        onSettled: () => setIsSubmitting(false),
+      }
+    );
   };
 
   return (
@@ -111,10 +131,10 @@ export default function LoginPage() {
             <button
               data-testid="button-submit"
               type="submit"
-              disabled={login.isPending}
-              className="w-full py-3 px-4 rounded-lg bg-sidebar-primary text-sidebar-primary-foreground text-sm font-semibold hover:opacity-90 active:scale-[0.99] transition-all disabled:opacity-60"
+              disabled={isSubmitting || login.isPending}
+              className="w-full py-3 px-4 rounded-lg bg-sidebar-primary text-sidebar-primary-foreground text-sm font-semibold hover:opacity-90 active:scale-[0.99] transition-all disabled:opacity-60 cursor-pointer"
             >
-              {login.isPending ? "Entrando..." : "Entrar"}
+              {isSubmitting || login.isPending ? "Entrando..." : "Entrar"}
             </button>
           </form>
 
