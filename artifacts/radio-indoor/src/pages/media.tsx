@@ -4,6 +4,7 @@ import {
   useListMedia, getListMediaQueryKey,
   useDeleteMedia, useDeleteMediaBatch,
   useListClients, getListClientsQueryKey,
+  handleStandaloneRequest,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -113,56 +114,56 @@ export default function MediaPage() {
     setUploadItems(items);
   };
 
-  const uploadWithXHR = (item: UploadItem, clientId: string, idx: number): Promise<void> => {
-    return new Promise((resolve, reject) => {
-      const formData = new FormData();
-      formData.append("file", item.file);
-      formData.append("title", item.title);
-      formData.append("type", item.type);
-      formData.append("clientId", clientId);
+  const uploadWithXHR = async (item: UploadItem, clientId: string, idx: number): Promise<void> => {
+    const formData = new FormData();
+    formData.append("file", item.file);
+    formData.append("title", item.title);
+    formData.append("type", item.type);
+    formData.append("clientId", clientId);
 
-      setUploadItems((prev) => prev.map((u, i) => i === idx ? { ...u, status: "uploading" } : u));
+    setUploadItems((prev) => prev.map((u, i) => (i === idx ? { ...u, status: "uploading", progress: 50 } : u)));
 
-      const xhr = new XMLHttpRequest();
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const pct = Math.round((e.loaded / e.total) * 100);
-          setUploadItems((prev) => prev.map((u, i) => i === idx ? { ...u, progress: pct } : u));
-        }
-      };
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          setUploadItems((prev) => prev.map((u, i) => i === idx ? { ...u, status: "done", progress: 100 } : u));
-          resolve();
-        } else {
-          setUploadItems((prev) => prev.map((u, i) => i === idx ? { ...u, status: "error" } : u));
-          reject(new Error(`HTTP ${xhr.status}`));
-        }
-      };
-      xhr.onerror = () => { setUploadItems((prev) => prev.map((u, i) => i === idx ? { ...u, status: "error" } : u)); reject(new Error("Network error")); };
-      xhr.open("POST", "/api/media");
-      xhr.withCredentials = true;
-      xhr.send(formData);
-    });
+    try {
+      const res = await handleStandaloneRequest("/api/media", "POST", formData);
+      if (res.status >= 200 && res.status < 300) {
+        setUploadItems((prev) => prev.map((u, i) => (i === idx ? { ...u, status: "done", progress: 100 } : u)));
+        return;
+      } else {
+        throw new Error(res.data?.message || "Erro no upload");
+      }
+    } catch (err: any) {
+      setUploadItems((prev) => prev.map((u, i) => (i === idx ? { ...u, status: "error" } : u)));
+      throw err;
+    }
   };
 
   const startUpload = async () => {
     if (!uploadClientId || !uploadItems.length) return;
     setIsUploading(true);
-    const BATCH = 3;
-    // Only upload items that haven't been completed yet (queued or error)
     const pending = uploadItems.map((u, i) => ({ u, i })).filter(({ u }) => u.status === "queued" || u.status === "error");
-    for (let i = 0; i < pending.length; i += BATCH) {
-      const batch = pending.slice(i, i + BATCH).map(({ u, i: idx }) => uploadWithXHR(u, uploadClientId, idx));
-      await Promise.allSettled(batch);
+    for (const { u, i: idx } of pending) {
+      try {
+        await uploadWithXHR(u, uploadClientId, idx);
+      } catch (e) {
+        console.warn("Upload item error:", e);
+      }
     }
     setIsUploading(false);
+    qc.invalidateQueries({ queryKey: getListMediaQueryKey() });
+    qc.invalidateQueries({ queryKey: getListClientsQueryKey() });
     invalidateMedia();
     const errors = uploadItems.filter((u) => u.status === "error").length;
     if (errors > 0) {
       toast({ title: `Upload finalizado com ${errors} erro(s)`, variant: "destructive" });
     } else {
       toast({ title: "Upload concluído com sucesso" });
+      setTimeout(() => {
+        setUploadOpen(false);
+        setUploadItems([]);
+        if (!clientFilter && uploadClientId) {
+          setClientFilter(uploadClientId);
+        }
+      }, 500);
     }
   };
 

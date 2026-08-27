@@ -74,7 +74,7 @@ export interface DBPlaybackLog {
 
 let dbInstance: IDBDatabase | null = null;
 
-function openDB(): Promise<IDBDatabase> {
+export function openDB(): Promise<IDBDatabase> {
   if (dbInstance) return Promise.resolve(dbInstance);
 
   return new Promise((resolve, reject) => {
@@ -415,6 +415,20 @@ export async function handleStandaloneRequest(
     return { status: 201, data: { id, ...newPl } };
   }
 
+  const plBatchMatch = path.match(/^\/api\/playlists\/(\d+)\/items\/batch$/);
+  if (plBatchMatch && method === "POST") {
+    const playlistId = parseInt(plBatchMatch[1]!);
+    const mediaIds: number[] = body?.mediaIds || [];
+    const allItems = await getAll<DBPlaylistItem>("playlistItems");
+    const currentItems = allItems.filter((i) => i.playlistId === playlistId);
+    let nextPos = currentItems.length;
+
+    for (const mediaId of mediaIds) {
+      await insert("playlistItems", { playlistId, mediaId: parseInt(String(mediaId)), position: nextPos++ });
+    }
+    return { status: 201, data: { added: mediaIds.length, success: true } };
+  }
+
   const plMatch = path.match(/^\/api\/playlists\/(\d+)$/);
   if (plMatch) {
     const plId = parseInt(plMatch[1]!);
@@ -466,12 +480,24 @@ export async function handleStandaloneRequest(
 
   const plReorderMatch = path.match(/^\/api\/playlists\/(\d+)\/reorder$/);
   if (plReorderMatch && method === "PUT") {
+    const itemIds: number[] = body?.itemIds || [];
     const items = body?.items || [];
-    for (const it of items) {
-      if (it.id && typeof it.position === "number") {
-        const existing = await getById<DBPlaylistItem>("playlistItems", it.id);
+
+    if (itemIds.length > 0) {
+      for (let pos = 0; pos < itemIds.length; pos++) {
+        const itemId = itemIds[pos]!;
+        const existing = await getById<DBPlaylistItem>("playlistItems", itemId);
         if (existing) {
-          await update("playlistItems", { ...existing, position: it.position });
+          await update("playlistItems", { ...existing, position: pos });
+        }
+      }
+    } else if (items.length > 0) {
+      for (const it of items) {
+        if (it.id && typeof it.position === "number") {
+          const existing = await getById<DBPlaylistItem>("playlistItems", it.id);
+          if (existing) {
+            await update("playlistItems", { ...existing, position: it.position });
+          }
         }
       }
     }
@@ -485,11 +511,11 @@ export async function handleStandaloneRequest(
     const typeParam = query.get("type");
     let result = media;
     if (clientIdParam) result = result.filter((m) => m.clientId === parseInt(clientIdParam));
-    if (typeParam) result = result.filter((m) => m.type === typeParam);
+    if (typeParam && typeParam !== "all") result = result.filter((m) => m.type === typeParam);
     return { status: 200, data: result };
   }
 
-  if (path === "/api/media/upload" && method === "POST") {
+  if ((path === "/api/media" || path === "/api/media/upload") && method === "POST") {
     let title = "Mídia de Áudio";
     let type: "music" | "jingle" = "music";
     let clientId = 1;
@@ -500,7 +526,7 @@ export async function handleStandaloneRequest(
     if (body instanceof FormData) {
       const file = body.get("file") as File;
       if (file) {
-        title = (body.get("title") as string) || file.name.replace(/\.[^/.]+$/, "");
+        title = (body.get("title") as string) || file.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ").trim();
         type = ((body.get("type") as string) || "music") as "music" | "jingle";
         clientId = parseInt(body.get("clientId") as string) || 1;
         size = file.size;
@@ -559,7 +585,7 @@ export async function handleStandaloneRequest(
   }
 
   // ── Player Queue Route ──
-  if (path === "/api/player/queue" || path.startsWith("/api/player/queue")) {
+  if (path === "/api/player/queue" || path.startsWith("/api/player/queue") || path.startsWith("/api/playback/queue")) {
     const clientIdParam = query.get("clientId") || "1";
     const clientId = parseInt(clientIdParam);
     const client = (await getById<DBClient>("clients", clientId)) || (await getAll<DBClient>("clients"))[0];
