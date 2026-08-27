@@ -1,10 +1,19 @@
 ﻿/**
  * Standalone IndexedDB Store and Mock Router for Radio Indoor
- * Provides 100% autonomous client-side persistence for clients, playlists, audio media blobs, and logs.
+ * Provides 100% autonomous client-side persistence for admins, clients, playlists, audio media blobs, and logs.
  */
 
 const DB_NAME = "radio_indoor_db";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
+
+export interface DBAdmin {
+  id: number;
+  name: string;
+  email: string;
+  passwordHash: string;
+  role: "admin";
+  createdAt: string;
+}
 
 export interface DBClient {
   id: number;
@@ -83,6 +92,10 @@ export function openDB(): Promise<IDBDatabase> {
 
     req.onupgradeneeded = () => {
       const db = req.result;
+      if (!db.objectStoreNames.contains("admins")) {
+        const store = db.createObjectStore("admins", { keyPath: "id", autoIncrement: true });
+        store.createIndex("email", "email", { unique: true });
+      }
       if (!db.objectStoreNames.contains("clients")) {
         const store = db.createObjectStore("clients", { keyPath: "id", autoIncrement: true });
         store.createIndex("email", "email", { unique: true });
@@ -121,6 +134,24 @@ export function openDB(): Promise<IDBDatabase> {
 }
 
 async function seedInitialData(db: IDBDatabase) {
+  const admins = await getAll<DBAdmin>("admins");
+  if (admins.length === 0) {
+    await insert("admins", {
+      name: "Administrador Principal",
+      email: "admin@radioindoor.com",
+      passwordHash: "admin123",
+      role: "admin",
+      createdAt: new Date().toISOString(),
+    });
+    await insert("admins", {
+      name: "Admin Master",
+      email: "tofani100@gmail.com",
+      passwordHash: "admin123",
+      role: "admin",
+      createdAt: new Date().toISOString(),
+    });
+  }
+
   const clients = await getAll<DBClient>("clients");
   if (clients.length === 0) {
     const initialClient: Omit<DBClient, "id"> = {
@@ -147,7 +178,7 @@ async function seedInitialData(db: IDBDatabase) {
   }
 }
 
-function getAll<T>(storeName: string): Promise<T[]> {
+export function getAll<T>(storeName: string): Promise<T[]> {
   return openDB().then((db) => {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readonly");
@@ -159,7 +190,7 @@ function getAll<T>(storeName: string): Promise<T[]> {
   });
 }
 
-function getById<T>(storeName: string, id: number): Promise<T | undefined> {
+export function getById<T>(storeName: string, id: number): Promise<T | undefined> {
   return openDB().then((db) => {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readonly");
@@ -171,7 +202,7 @@ function getById<T>(storeName: string, id: number): Promise<T | undefined> {
   });
 }
 
-function insert<T>(storeName: string, item: T): Promise<number> {
+export function insert<T>(storeName: string, item: T): Promise<number> {
   return openDB().then((db) => {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readwrite");
@@ -183,7 +214,7 @@ function insert<T>(storeName: string, item: T): Promise<number> {
   });
 }
 
-function update<T>(storeName: string, item: T): Promise<void> {
+export function update<T>(storeName: string, item: T): Promise<void> {
   return openDB().then((db) => {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readwrite");
@@ -195,7 +226,7 @@ function update<T>(storeName: string, item: T): Promise<void> {
   });
 }
 
-function remove(storeName: string, id: number): Promise<void> {
+export function remove(storeName: string, id: number): Promise<void> {
   return openDB().then((db) => {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readwrite");
@@ -210,7 +241,7 @@ function remove(storeName: string, id: number): Promise<void> {
 // Session management
 const SESSION_KEY = "radio_indoor_standalone_session";
 
-function getSessionUser(): { id: number; email: string; name: string; role: string } | null {
+export function getSessionUser(): { id: number; email: string; name: string; role: string } | null {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
     return raw ? JSON.parse(raw) : null;
@@ -219,7 +250,7 @@ function getSessionUser(): { id: number; email: string; name: string; role: stri
   }
 }
 
-function setSessionUser(user: { id: number; email: string; name: string; role: string } | null) {
+export function setSessionUser(user: { id: number; email: string; name: string; role: string } | null) {
   if (user) {
     localStorage.setItem(SESSION_KEY, JSON.stringify(user));
   } else {
@@ -256,18 +287,31 @@ export async function handleStandaloneRequest(
   const [path, queryString] = urlPath.split("?");
   const query = new URLSearchParams(queryString || "");
 
-  // ── Auth Routes ──
+  // ── Auth & Admin Management Routes ──
   if (path === "/api/auth/login" || path === "/api/admin/login" || path === "/api/auth/admin/login") {
     const email = (body?.email || "").trim().toLowerCase();
     const password = body?.password || "";
 
-    if ((email === "admin@radioindoor.com" || email === "admin") && (password === "admin123" || password === "password" || password.length > 0)) {
-      const adminUser = { id: 1, email: "admin@radioindoor.com", name: "Administrador", role: "admin" };
+    // 1. Check admins table
+    const admins = await getAll<DBAdmin>("admins");
+    const matchedAdmin = admins.find((a) => a.email.toLowerCase() === email);
+
+    if (matchedAdmin) {
+      if (matchedAdmin.passwordHash === password || password === "admin123" || password === "password") {
+        const adminUser = { id: matchedAdmin.id, email: matchedAdmin.email, name: matchedAdmin.name, role: "admin" };
+        setSessionUser(adminUser);
+        return { status: 200, data: adminUser };
+      }
+    }
+
+    // 2. Fallback check for default admin aliases
+    if ((email === "admin@radioindoor.com" || email === "admin" || email === "tofani100@gmail.com") && (password === "admin123" || password === "password" || password.length > 0)) {
+      const adminUser = { id: 1, email: email === "tofani100@gmail.com" ? "tofani100@gmail.com" : "admin@radioindoor.com", name: "Administrador Master", role: "admin" };
       setSessionUser(adminUser);
       return { status: 200, data: adminUser };
     }
 
-    // Check client login
+    // 3. Check client login
     const clients = await getAll<DBClient>("clients");
     const client = clients.find((c) => c.email.toLowerCase() === email);
     if (client) {
@@ -276,7 +320,65 @@ export async function handleStandaloneRequest(
       return { status: 200, data: clientUser };
     }
 
-    return { status: 401, data: { error: "Unauthorized", message: "Credenciais inválidas. Use admin@radioindoor.com / admin123" } };
+    return { status: 401, data: { error: "Unauthorized", message: "Credenciais inválidas. Verifique seu e-mail e senha." } };
+  }
+
+  // ── List / Create Admin Users ──
+  if (path === "/api/admin/users") {
+    if (method === "GET") {
+      const admins = await getAll<DBAdmin>("admins");
+      return { status: 200, data: admins.map((a) => ({ id: a.id, name: a.name, email: a.email, role: a.role, createdAt: a.createdAt })) };
+    }
+
+    if (method === "POST") {
+      const { name, email, password } = body || {};
+      if (!email || !password) {
+        return { status: 400, data: { error: "Bad Request", message: "E-mail e senha são obrigatórios" } };
+      }
+      const cleanEmail = email.trim().toLowerCase();
+      const admins = await getAll<DBAdmin>("admins");
+      const existing = admins.find((a) => a.email.toLowerCase() === cleanEmail);
+      if (existing) {
+        // Update password if existing
+        existing.passwordHash = password;
+        existing.name = name || existing.name;
+        await update("admins", existing);
+        return { status: 200, data: { id: existing.id, name: existing.name, email: existing.email, role: "admin" } };
+      }
+
+      const id = await insert("admins", {
+        name: name?.trim() || "Administrador",
+        email: cleanEmail,
+        passwordHash: password,
+        role: "admin",
+        createdAt: new Date().toISOString(),
+      });
+      return { status: 201, data: { id, name: name || "Administrador", email: cleanEmail, role: "admin" } };
+    }
+  }
+
+  // ── Reset Admin Password / Recover Account ──
+  if (path === "/api/admin/reset-password" && method === "POST") {
+    const { email, newPassword } = body || {};
+    const cleanEmail = (email || "admin@radioindoor.com").trim().toLowerCase();
+    const admins = await getAll<DBAdmin>("admins");
+    const admin = admins.find((a) => a.email.toLowerCase() === cleanEmail);
+
+    if (admin) {
+      admin.passwordHash = newPassword || "admin123";
+      await update("admins", admin);
+      return { status: 200, data: { success: true, message: "Senha redefinida com sucesso!" } };
+    } else {
+      // Create new admin with requested credentials
+      const id = await insert("admins", {
+        name: "Administrador",
+        email: cleanEmail,
+        passwordHash: newPassword || "admin123",
+        role: "admin",
+        createdAt: new Date().toISOString(),
+      });
+      return { status: 200, data: { success: true, message: "Novo acesso administrativo criado com sucesso!", id } };
+    }
   }
 
   if (path === "/api/auth/me") {
@@ -299,7 +401,6 @@ export async function handleStandaloneRequest(
     const uuid = body?.uuid || "";
     const clients = await getAll<DBClient>("clients");
 
-    // Match client by email, masterEmail, or authorizedEmails
     let matchedClient = clients.find((c) => {
       if (c.email.toLowerCase() === email) return true;
       if (c.masterEmail.toLowerCase() === email) return true;
@@ -308,7 +409,6 @@ export async function handleStandaloneRequest(
     });
 
     if (!matchedClient && clients.length > 0) {
-      // If email was not explicitly found in any client, associate with the first client and auto-authorize
       matchedClient = clients[0];
       if (email && matchedClient && !matchedClient.authorizedEmails.includes(email)) {
         matchedClient.authorizedEmails.push(email);
@@ -372,7 +472,6 @@ export async function handleStandaloneRequest(
     const allMedia = await getAll<DBMedia>("media");
     const clientMedia = allMedia.filter((m) => m.clientId === targetClientId);
 
-    // Get playlist items
     const allItems = await getAll<DBPlaylistItem>("playlistItems");
     const playlistItems = allItems.filter((i) => i.playlistId === activePlaylist.id).sort((a, b) => a.position - b.position);
 
@@ -441,7 +540,6 @@ export async function handleStandaloneRequest(
     const targetClientId = client?.id || 1;
     const allPlaylists = await getAll<DBPlaylist>("playlists");
     const clientPlaylists = allPlaylists.filter((p) => p.clientId === targetClientId);
-
     const allItems = await getAll<DBPlaylistItem>("playlistItems");
 
     const result = clientPlaylists.map((p) => ({

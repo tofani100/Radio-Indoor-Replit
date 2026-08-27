@@ -4,6 +4,9 @@ import { Radio, Eye, EyeOff } from "lucide-react";
 import { useAdminLogin, handleStandaloneRequest } from "@workspace/api-client-react";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 export default function LoginPage() {
   const [, setLocation] = useLocation();
@@ -13,6 +16,49 @@ export default function LoginPage() {
   const [password, setPassword] = useState("admin123");
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // States for password reset / admin creation modal
+  const [resetModalOpen, setResetModalOpen] = useState(false);
+  const [resetName, setResetName] = useState("");
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetPassword, setResetPassword] = useState("");
+
+  const handleSaveNewAdmin = async () => {
+    if (!resetEmail || !resetPassword) {
+      toast({ title: "Preencha todos os campos", description: "Informe o e-mail e a nova senha.", variant: "destructive" });
+      return;
+    }
+    try {
+      const res = await handleStandaloneRequest("/api/admin/users", "POST", {
+        name: resetName || "Administrador",
+        email: resetEmail,
+        password: resetPassword,
+      });
+      if (res.status === 200 || res.status === 201) {
+        toast({ title: "Acesso administrativo salvo com sucesso!", description: "Você já pode entrar com este e-mail e senha." });
+        setEmail(resetEmail);
+        setPassword(resetPassword);
+        setResetModalOpen(false);
+      } else {
+        toast({ title: "Erro ao salvar", description: res.data?.message || "Não foi possível salvar o acesso.", variant: "destructive" });
+      }
+    } catch (e: any) {
+      toast({ title: "Erro", description: e.message || "Falha ao salvar acesso.", variant: "destructive" });
+    }
+  };
+
+  const handleRestoreDefaults = async () => {
+    try {
+      await handleStandaloneRequest("/api/admin/reset-password", "POST", { email: "admin@radioindoor.com", newPassword: "admin123" });
+      await handleStandaloneRequest("/api/admin/reset-password", "POST", { email: "tofani100@gmail.com", newPassword: "admin123" });
+      setEmail("admin@radioindoor.com");
+      setPassword("admin123");
+      toast({ title: "Acessos padrão restaurados!", description: "admin@radioindoor.com e tofani100@gmail.com com a senha admin123." });
+      setResetModalOpen(false);
+    } catch (e: any) {
+      toast({ title: "Erro ao restaurar", description: e.message, variant: "destructive" });
+    }
+  };
 
   const login = useAdminLogin({
     mutation: {
@@ -136,6 +182,16 @@ export default function LoginPage() {
             >
               {isSubmitting || login.isPending ? "Entrando..." : "Entrar"}
             </button>
+
+            <div className="pt-2 flex items-center justify-between text-xs">
+              <button
+                type="button"
+                onClick={() => setResetModalOpen(true)}
+                className="text-sidebar-primary hover:underline font-medium transition-colors"
+              >
+                Esqueci a senha / Criar novo Login Admin
+              </button>
+            </div>
           </form>
 
           <p className="mt-8 text-center text-xs text-sidebar-foreground/30 font-mono">
@@ -143,6 +199,77 @@ export default function LoginPage() {
           </p>
         </div>
       </div>
+
+      {/* Modal para Redefinir Senha ou Criar Novo Login de Administrador */}
+      <Dialog open={resetModalOpen} onOpenChange={setResetModalOpen}>
+        <DialogContent className="sm:max-w-md bg-card border-card-border">
+          <DialogHeader>
+            <DialogTitle className="text-foreground">Recuperação e Gestão de Logins</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2 text-sm text-muted-foreground">
+            <p>
+              Você pode redefinir a senha de um administrador existente, criar um novo login ou restaurar o acesso padrão mestre.
+            </p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-foreground mb-1">Nome do Administrador (opcional)</label>
+                <Input
+                  value={resetName}
+                  onChange={(e) => setResetName(e.target.value)}
+                  placeholder="Ex: Administrador Master"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-foreground mb-1">E-mail Administrativo</label>
+                <Input
+                  type="email"
+                  value={resetEmail}
+                  onChange={(e) => setResetEmail(e.target.value)}
+                  placeholder="Ex: seu-email@gmail.com"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-foreground mb-1">Nova Senha</label>
+                <Input
+                  type="password"
+                  value={resetPassword}
+                  onChange={(e) => setResetPassword(e.target.value)}
+                  placeholder="Digite sua nova senha"
+                />
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="flex flex-col sm:flex-row gap-2 sm:justify-between">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleRestoreDefaults}
+              className="text-xs"
+            >
+              Restaurar Padrão (admin123)
+            </Button>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setResetModalOpen(false)}
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleSaveNewAdmin}
+              >
+                Salvar / Criar Acesso
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
