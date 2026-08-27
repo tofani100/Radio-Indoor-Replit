@@ -223,16 +223,6 @@ export default function LoginPage() {
             >
               {isSubmitting || login.isPending ? "Entrando..." : "Entrar"}
             </button>
-
-            <div className="pt-2 flex items-center justify-between text-xs">
-              <button
-                type="button"
-                onClick={() => setResetModalOpen(true)}
-                className="text-sidebar-primary hover:underline font-medium transition-colors"
-              >
-                Esqueci a senha / Criar novo Login Admin
-              </button>
-            </div>
           </form>
 
           <p className="mt-8 text-center text-xs text-sidebar-foreground/30 font-mono">
@@ -240,113 +230,6 @@ export default function LoginPage() {
           </p>
         </div>
       </div>
-
-      {/* Modal Customizado para Redefinir Senha ou Criar Novo Login de Administrador */}
-      {resetModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-md bg-[#131d31] border border-slate-700/80 rounded-2xl shadow-2xl p-6 sm:p-7 text-white space-y-5">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h2 className="text-base font-semibold text-white">Recuperação e Gestão de Logins</h2>
-              <button
-                type="button"
-                onClick={() => setResetModalOpen(false)}
-                className="text-slate-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-slate-800 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-300/80 leading-relaxed">
-              Crie um novo login de administrador, redefina a senha de um existente ou restaure o acesso padrão com um clique.
-            </p>
-
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleSaveNewAdmin();
-              }}
-              className="space-y-4"
-            >
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5 uppercase tracking-wider">
-                  Nome do Administrador (opcional)
-                </label>
-                <input
-                  type="text"
-                  value={resetName}
-                  onChange={(e) => setResetName(e.target.value)}
-                  placeholder="Ex: Administrador Master"
-                  className="w-full px-4 py-2.5 rounded-lg bg-slate-900/90 border border-slate-700 text-white placeholder:text-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 transition-all box-border"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5 uppercase tracking-wider">
-                  E-mail Administrativo *
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={resetEmail}
-                  onChange={(e) => setResetEmail(e.target.value)}
-                  placeholder="Ex: seu-email@gmail.com"
-                  className="w-full px-4 py-2.5 rounded-lg bg-slate-900/90 border border-slate-700 text-white placeholder:text-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 transition-all box-border"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5 uppercase tracking-wider">
-                  Nova Senha *
-                </label>
-                <div className="relative w-full">
-                  <input
-                    type={showResetPassword ? "text" : "password"}
-                    required
-                    value={resetPassword}
-                    onChange={(e) => setResetPassword(e.target.value)}
-                    placeholder="Digite a nova senha"
-                    className="w-full px-4 py-2.5 pr-12 rounded-lg bg-slate-900/90 border border-slate-700 text-white placeholder:text-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 transition-all box-border"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowResetPassword((v) => !v)}
-                    aria-label={showResetPassword ? "Ocultar senha" : "Mostrar senha"}
-                    title={showResetPassword ? "Ocultar senha" : "Mostrar senha"}
-                    className="absolute inset-y-0 right-0 flex items-center justify-center w-12 text-slate-400 hover:text-sky-400 transition-colors cursor-pointer"
-                  >
-                    {showResetPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex flex-col sm:flex-row gap-2 pt-3 border-t border-slate-800 sm:justify-between items-center">
-                <button
-                  type="button"
-                  onClick={handleRestoreDefaults}
-                  className="text-xs text-slate-400 hover:text-sky-400 hover:underline transition-colors py-2 cursor-pointer"
-                >
-                  Restaurar Padrão (admin123)
-                </button>
-                <div className="flex gap-2 w-full sm:w-auto justify-end">
-                  <button
-                    type="button"
-                    onClick={() => setResetModalOpen(false)}
-                    className="px-4 py-2 rounded-lg text-xs font-medium text-slate-300 hover:bg-slate-800 transition-colors cursor-pointer"
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-5 py-2.5 rounded-lg text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-white shadow-md active:scale-95 transition-all cursor-pointer"
-                  >
-                    Salvar / Criar Acesso
-                  </button>
-                </div>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

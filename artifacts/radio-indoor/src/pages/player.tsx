@@ -793,14 +793,14 @@ export default function PlayerPage() {
         </div>
 
         <div className="flex items-center gap-4">
-          {/* Playlist switcher — only shown when multiple playlists are available */}
-          {multiplePlaylistsAvailable && (
+          {/* Playlist switcher — exibido para permitir a troca entre todas as playlists do cliente */}
+          {(availablePlaylists?.length ?? 0) > 0 && (
             <div className="relative">
               <button
                 data-testid="button-playlist-switcher"
                 type="button"
                 onClick={() => setPlaylistDropdownOpen((o) => !o)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded border border-[var(--dj-cyan)] bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] text-[10px] uppercase font-bold tracking-widest hover:bg-[var(--dj-cyan)] hover:text-[#060a14] transition-colors"
+                className="flex items-center gap-2 px-3 py-1.5 rounded border border-[var(--dj-cyan)] bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] text-[10px] uppercase font-bold tracking-widest hover:bg-[var(--dj-cyan)] hover:text-[#060a14] transition-colors cursor-pointer"
                 title="Trocar de playlist"
               >
                 <ListMusic className="w-3.5 h-3.5 flex-none" />
