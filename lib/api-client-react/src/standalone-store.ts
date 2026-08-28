@@ -674,18 +674,72 @@ export async function handleStandaloneRequest(
     const email = (body?.email || "").trim().toLowerCase();
     const uuid = (body?.uuid || "").trim();
 
+    console.warn("[REGISTER] ═══════════════════════════════════════════");
+    console.warn("[REGISTER] Email digitado:", JSON.stringify(email));
+    console.warn("[REGISTER] UUID:", uuid);
+
     if (!email) {
       return { status: 400, data: { error: "Bad Request", message: "Email é obrigatório" } };
     }
 
-    const clients = await getAll<DBClient>("clients");
-    const activeClients = clients.filter((c) => c.active !== false);
+    let clients: DBClient[] = [];
+    try {
+      clients = await getAll<DBClient>("clients");
+    } catch (err) {
+      console.error("[REGISTER] FALHA ao carregar clientes:", err);
+    }
 
-    const authorizedClient = activeClients.find((c) => {
-      return extractClientAuthorizedEmails(c).includes(email);
-    });
+    console.warn("[REGISTER] Total de clientes carregados:", clients.length);
+
+    // Log EVERY client with ALL its email fields for diagnosis
+    for (const c of clients) {
+      const authEmails = Array.isArray(c.authorizedEmails) ? c.authorizedEmails : [];
+      console.warn(
+        `[REGISTER] Cliente "${c.name}" (id=${c.id}, active=${c.active}):`,
+        `email=${JSON.stringify(c.email)},`,
+        `masterEmail=${JSON.stringify(c.masterEmail)},`,
+        `authorizedEmails=${JSON.stringify(authEmails)}`
+      );
+    }
+
+    const activeClients = clients.filter((c) => c.active !== false);
+    console.warn("[REGISTER] Clientes ativos (active !== false):", activeClients.length);
+
+    // Bulletproof matching — check every possible field, normalize everything
+    let authorizedClient: DBClient | undefined;
+    for (const c of activeClients) {
+      // Collect ALL emails from ALL fields
+      const allEmails: string[] = [];
+
+      // 1. authorizedEmails array
+      if (Array.isArray(c.authorizedEmails)) {
+        for (const e of c.authorizedEmails) {
+          if (e && typeof e === "string") allEmails.push(e.trim().toLowerCase());
+        }
+      }
+
+      // 2. masterEmail
+      if (c.masterEmail && typeof c.masterEmail === "string") {
+        allEmails.push(c.masterEmail.trim().toLowerCase());
+      }
+
+      // 3. email (login email)
+      if (c.email && typeof c.email === "string") {
+        allEmails.push(c.email.trim().toLowerCase());
+      }
+
+      const match = allEmails.includes(email);
+      console.warn(`[REGISTER] Testando "${c.name}": [${allEmails.join(", ")}] → ${match ? "✅ MATCH" : "❌ sem match"}`);
+
+      if (match) {
+        authorizedClient = c;
+        break;
+      }
+    }
 
     if (authorizedClient) {
+      console.warn("[REGISTER] ✅ AUTORIZADO pelo cliente:", authorizedClient.name);
+
       const allDevs = await getAll<DBDevice>("devices");
       const nowIso = new Date().toISOString();
       let existingDev = allDevs.find((d) => (uuid && d.uuid === uuid) || (d.email && d.email.toLowerCase() === email));
@@ -725,6 +779,7 @@ export async function handleStandaloneRequest(
       };
     }
 
+    console.warn("[REGISTER] ❌ NENHUM cliente encontrado para:", email);
     return {
       status: 200,
       data: {

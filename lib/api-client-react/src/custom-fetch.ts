@@ -383,7 +383,7 @@ export async function customFetch<T = unknown>(
       }
     } catch (err) {
       if (err instanceof ApiError) throw err;
-      console.warn("Standalone request error:", err);
+      console.error("[customFetch] Standalone request THREW error for:", urlStr, "method:", method, "error:", err);
     }
   }
 
