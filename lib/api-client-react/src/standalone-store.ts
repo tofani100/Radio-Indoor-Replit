@@ -665,9 +665,10 @@ export async function handleStandaloneRequest(
     const clients = await getAll<DBClient>("clients");
     const activeClients = clients.filter((c) => c.active);
 
-    // 1. Check if email is in masterEmail or authorizedEmails of any active client
+    // 1. Check if email is in masterEmail, authorizedEmails, or email of any active client
     const authorizedClient = activeClients.find((c) => {
       if (c.masterEmail && c.masterEmail.toLowerCase() === email) return true;
+      if (c.email && c.email.toLowerCase() === email) return true;
       if (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === email)) return true;
       return false;
     });
@@ -712,49 +713,7 @@ export async function handleStandaloneRequest(
       };
     }
 
-    // 2. Check if email matches login email of an active client (requires manual approval)
-    const loginClient = activeClients.find((c) => c.email && c.email.toLowerCase() === email);
-    if (loginClient) {
-      const allDevs = await getAll<DBDevice>("devices");
-      const nowIso = new Date().toISOString();
-      let existingDev = allDevs.find((d) => (uuid && d.uuid === uuid) || (d.email && d.email.toLowerCase() === email));
-      let devId = 1;
-      if (existingDev) {
-        devId = existingDev.id;
-        existingDev.lastSeen = nowIso;
-        existingDev.clientId = loginClient.id;
-        existingDev.email = email;
-        if (uuid) existingDev.uuid = uuid;
-        existingDev.status = "pending";
-        await update("devices", existingDev);
-      } else {
-        const newDev: Omit<DBDevice, "id"> = {
-          clientId: loginClient.id,
-          name: email.split("@")[0] || "Device",
-          pairingCode: "",
-          uuid: uuid || `dev-${Date.now()}`,
-          email: email,
-          status: "pending",
-          lastSeen: nowIso,
-          createdAt: nowIso,
-        };
-        devId = await insert("devices", newDev);
-      }
-
-      return {
-        status: 200,
-        data: {
-          status: "pending",
-          registered: true,
-          clientId: loginClient.id,
-          clientName: loginClient.name,
-          deviceId: devId,
-          message: "Aguardando aprovação do administrador",
-        },
-      };
-    }
-
-    // 3. Email is NOT registered in any client -> Reject with pending / unauthorized status
+    // 2. Email is NOT registered in any client -> Reject with pending / unauthorized status
     return {
       status: 200,
       data: {
@@ -784,16 +743,17 @@ export async function handleStandaloneRequest(
     const clients = await getAll<DBClient>("clients");
     const activeClients = clients.filter((c) => c.active);
 
-    const client = activeClients.find((c) => {
+    const matchingClients = activeClients.filter((c) => {
       if (clientIdParam && c.id === parseInt(clientIdParam)) return true;
       if (emailParam) {
         if (c.masterEmail && c.masterEmail.toLowerCase() === emailParam) return true;
+        if (c.email && c.email.toLowerCase() === emailParam) return true;
         if (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === emailParam)) return true;
       }
       return false;
     });
 
-    if (!client) {
+    if (matchingClients.length === 0) {
       return {
         status: 403,
         data: {
@@ -803,13 +763,19 @@ export async function handleStandaloneRequest(
       };
     }
 
-    const targetClientId = client.id;
+    const clientIds = matchingClients.map((c) => c.id);
     const allPlaylists = await getAll<DBPlaylist>("playlists");
-    const clientPlaylists = allPlaylists.filter((p) => p.clientId === targetClientId && p.active);
+    const clientPlaylists = allPlaylists.filter((p) => clientIds.includes(p.clientId) && p.active);
 
     let activePlaylist = requestedPlaylistId
       ? clientPlaylists.find((p) => p.id === requestedPlaylistId)
       : clientPlaylists[0];
+
+    const targetClient = activePlaylist
+      ? matchingClients.find((c) => c.id === activePlaylist.clientId) || matchingClients[0]!
+      : matchingClients[0]!;
+
+    const targetClientId = targetClient.id;
 
     if (!activePlaylist) {
       return {
@@ -819,12 +785,12 @@ export async function handleStandaloneRequest(
           deviceId: 1,
           playlistId: null,
           currentIndex: 0,
-          playbackMode: client.playbackMode || "sequential",
-          jingleMode: client.jingleMode || "interval",
-          jingleInterval: client.jingleInterval || 3,
-          jingleCount: client.jingleCount ?? 1,
-          voiceoverCount: client.voiceoverCount ?? 1,
-          jingleIntervalSeconds: client.jingleIntervalSeconds || 900,
+          playbackMode: targetClient.playbackMode || "sequential",
+          jingleMode: targetClient.jingleMode || "interval",
+          jingleInterval: targetClient.jingleInterval || 3,
+          jingleCount: targetClient.jingleCount ?? 1,
+          voiceoverCount: targetClient.voiceoverCount ?? 1,
+          jingleIntervalSeconds: targetClient.jingleIntervalSeconds || 900,
           musicVolume: 1,
           jingleVolume: 1,
           items: [],
@@ -893,12 +859,12 @@ export async function handleStandaloneRequest(
         deviceId: 1,
         playlistId: activePlaylist.id,
         currentIndex: 0,
-        playbackMode: client.playbackMode || "sequential",
-        jingleMode: client.jingleMode || "interval",
-        jingleInterval: client.jingleInterval || 3,
-        jingleCount: client.jingleCount ?? 1,
-        voiceoverCount: client.voiceoverCount ?? 1,
-        jingleIntervalSeconds: client.jingleIntervalSeconds || 900,
+        playbackMode: targetClient.playbackMode || "sequential",
+        jingleMode: targetClient.jingleMode || "interval",
+        jingleInterval: targetClient.jingleInterval || 3,
+        jingleCount: targetClient.jingleCount ?? 1,
+        voiceoverCount: targetClient.voiceoverCount ?? 1,
+        jingleIntervalSeconds: targetClient.jingleIntervalSeconds || 900,
         musicVolume: 1,
         jingleVolume: 1,
         items: queueItems,
@@ -912,15 +878,16 @@ export async function handleStandaloneRequest(
     const clients = await getAll<DBClient>("clients");
     const activeClients = clients.filter((c) => c.active);
 
-    const client = activeClients.find((c) => {
+    const matchingClients = activeClients.filter((c) => {
       if (emailParam) {
         if (c.masterEmail && c.masterEmail.toLowerCase() === emailParam) return true;
+        if (c.email && c.email.toLowerCase() === emailParam) return true;
         if (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === emailParam)) return true;
       }
       return false;
     });
 
-    if (!client) {
+    if (matchingClients.length === 0) {
       return {
         status: 403,
         data: {
@@ -930,18 +897,23 @@ export async function handleStandaloneRequest(
       };
     }
 
-    const targetClientId = client.id;
+    const clientIds = matchingClients.map((c) => c.id);
+    const clientMap = new Map(matchingClients.map((c) => [c.id, c.name]));
     const allPlaylists = await getAll<DBPlaylist>("playlists");
-    const clientPlaylists = allPlaylists.filter((p) => p.clientId === targetClientId && p.active);
+    const matchedPlaylists = allPlaylists.filter((p) => clientIds.includes(p.clientId) && p.active);
     const allItems = await getAll<DBPlaylistItem>("playlistItems");
 
-    const result = clientPlaylists.map((p) => ({
-      id: p.id,
-      name: p.name,
-      itemCount: allItems.filter((i) => i.playlistId === p.id).length,
-      active: p.active,
-      clientId: p.clientId,
-    }));
+    const result = matchedPlaylists.map((p) => {
+      const clientName = clientMap.get(p.clientId) || "";
+      return {
+        id: p.id,
+        name: matchingClients.length > 1 ? `${clientName} — ${p.name}` : p.name,
+        clientName,
+        itemCount: allItems.filter((i) => i.playlistId === p.id).length,
+        active: p.active,
+        clientId: p.clientId,
+      };
+    });
 
     return { status: 200, data: result };
   }
@@ -1020,11 +992,12 @@ export async function handleStandaloneRequest(
 
   if (path === "/api/clients" && method === "POST") {
     const { name, email, masterEmail, password, playbackMode, jingleMode, jingleInterval, jingleCount, voiceoverCount, jingleIntervalSeconds, authorizedEmails } = body || {};
-    const cleanEmail = (email || "").trim().toLowerCase();
+    const validEmails = Array.isArray(authorizedEmails) ? authorizedEmails.map((e) => String(e).trim().toLowerCase()).filter(Boolean) : [];
+    const cleanEmail = (email || validEmails[0] || `client-${Date.now()}@cliente.radioindoor.com`).trim().toLowerCase();
     const cleanMasterEmail = (masterEmail || cleanEmail).trim().toLowerCase();
 
     const existingClients = await getAll<DBClient>("clients");
-    if (existingClients.some((c) => c.email.toLowerCase() === cleanEmail)) {
+    if (existingClients.some((c) => c.email.toLowerCase() === cleanEmail && !cleanEmail.includes("@cliente.radioindoor.com"))) {
       return { status: 400, data: { error: "Bad Request", message: "Email já cadastrado" } };
     }
 
@@ -1032,7 +1005,7 @@ export async function handleStandaloneRequest(
       name: (name || "Novo Cliente").trim(),
       email: cleanEmail,
       masterEmail: cleanMasterEmail,
-      authorizedEmails: Array.isArray(authorizedEmails) ? authorizedEmails : [],
+      authorizedEmails: validEmails,
       passwordHash: password || "123456",
       playbackMode: playbackMode || "sequential",
       jingleMode: jingleMode || "interval",
