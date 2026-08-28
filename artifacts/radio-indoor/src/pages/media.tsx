@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 interface UploadItem {
   file: File;
   title: string;
-  type: "music" | "jingle";
+  type: "music" | "jingle" | "voiceover";
   progress: number;
   status: "queued" | "uploading" | "done" | "error";
 }
@@ -30,7 +30,7 @@ export default function MediaPage() {
     const params = new URLSearchParams(window.location.search);
     return params.get("clientId") || "";
   });
-  const [typeFilter, setTypeFilter] = useState<string>("music");
+  const [typeFilter, setTypeFilter] = useState<string>("all");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadClientId, setUploadClientId] = useState<string>("");
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
@@ -47,9 +47,9 @@ export default function MediaPage() {
     }
   }, [clients, clientFilter]);
 
-  const mediaParams: { clientId?: number; type?: "music" | "jingle" } = {};
+  const mediaParams: { clientId?: number; type?: "music" | "jingle" | "voiceover" } = {};
   if (clientFilter) mediaParams.clientId = parseInt(clientFilter);
-  mediaParams.type = typeFilter as "music" | "jingle";
+  if (typeFilter !== "all") mediaParams.type = typeFilter as "music" | "jingle" | "voiceover";
 
   const { data: media, isLoading } = useListMedia(mediaParams, { query: { queryKey: getListMediaQueryKey(mediaParams), enabled: !!clientFilter } });
 
@@ -100,10 +100,8 @@ export default function MediaPage() {
 
   const handleFilesSelected = (files: FileList | null) => {
     if (!files) return;
-    // Use the current library filter as the default type — if the user is
-    // filtering by Locução, new uploads default to Locução, and so on.
-    const defaultType: "music" | "jingle" =
-      typeFilter === "jingle" ? "jingle" : "music";
+    const defaultType: "music" | "jingle" | "voiceover" =
+      typeFilter === "jingle" ? "jingle" : typeFilter === "voiceover" ? "voiceover" : "music";
     const items: UploadItem[] = Array.from(files).map((f) => ({
       file: f,
       title: f.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ").trim(),
@@ -121,10 +119,12 @@ export default function MediaPage() {
     formData.append("type", item.type);
     formData.append("clientId", clientId);
 
-    setUploadItems((prev) => prev.map((u, i) => (i === idx ? { ...u, status: "uploading", progress: 50 } : u)));
+    setUploadItems((prev) => prev.map((u, i) => (i === idx ? { ...u, status: "uploading", progress: 10 } : u)));
 
     try {
-      const res = await handleStandaloneRequest("/api/media", "POST", formData);
+      const res = await handleStandaloneRequest("/api/media", "POST", formData, (progress) => {
+        setUploadItems((prev) => prev.map((u, i) => (i === idx ? { ...u, progress } : u)));
+      });
       if (res.status >= 200 && res.status < 300) {
         setUploadItems((prev) => prev.map((u, i) => (i === idx ? { ...u, status: "done", progress: 100 } : u)));
         return;
@@ -141,20 +141,24 @@ export default function MediaPage() {
     if (!uploadClientId || !uploadItems.length) return;
     setIsUploading(true);
     const pending = uploadItems.map((u, i) => ({ u, i })).filter(({ u }) => u.status === "queued" || u.status === "error");
+    let errorCount = 0;
+
     for (const { u, i: idx } of pending) {
       try {
         await uploadWithXHR(u, uploadClientId, idx);
       } catch (e) {
+        errorCount++;
         console.warn("Upload item error:", e);
       }
     }
+
     setIsUploading(false);
     qc.invalidateQueries({ queryKey: getListMediaQueryKey() });
     qc.invalidateQueries({ queryKey: getListClientsQueryKey() });
     invalidateMedia();
-    const errors = uploadItems.filter((u) => u.status === "error").length;
-    if (errors > 0) {
-      toast({ title: `Upload finalizado com ${errors} erro(s)`, variant: "destructive" });
+
+    if (errorCount > 0) {
+      toast({ title: `Upload finalizado com ${errorCount} erro(s)`, variant: "destructive" });
     } else {
       toast({ title: "Upload concluído com sucesso" });
       setTimeout(() => {
@@ -212,10 +216,12 @@ export default function MediaPage() {
           </Select>
         </div>
         <Select value={typeFilter} onValueChange={setTypeFilter}>
-          <SelectTrigger className="w-36" data-testid="select-type-filter"><SelectValue placeholder="Tipo" /></SelectTrigger>
+          <SelectTrigger className="w-40" data-testid="select-type-filter"><SelectValue placeholder="Tipo" /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="music">Música</SelectItem>
-            <SelectItem value="jingle">Locução</SelectItem>
+            <SelectItem value="all">Todos os tipos</SelectItem>
+            <SelectItem value="music">🎵 Música</SelectItem>
+            <SelectItem value="jingle">🔔 Jingle</SelectItem>
+            <SelectItem value="voiceover">🎙️ Locução</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -286,6 +292,13 @@ export default function MediaPage() {
             {isLoading && [...Array(5)].map((_, i) => <tr key={i}><td colSpan={7} className="px-5 py-4"><div className="h-4 bg-muted animate-pulse rounded" /></td></tr>)}
             {Array.isArray(media) && media.map((m) => {
               const isChecked = selected.has(m.id);
+              const badgeConfig =
+                m.type === "jingle"
+                  ? { label: "Jingle", bg: "bg-amber-500/10 text-amber-600 border border-amber-500/20", icon: <Mic className="w-3 h-3" /> }
+                  : m.type === "voiceover"
+                  ? { label: "Locução", bg: "bg-purple-500/10 text-purple-600 border border-purple-500/20", icon: <Mic className="w-3 h-3" /> }
+                  : { label: "Música", bg: "bg-blue-500/10 text-blue-600 border border-blue-500/20", icon: <Music className="w-3 h-3" /> };
+
               return (
                 <tr
                   key={m.id}
@@ -305,9 +318,9 @@ export default function MediaPage() {
                     />
                   </td>
                   <td className="px-5 py-4">
-                    <span className={cn("inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded font-medium", m.type === "music" ? "bg-blue-500/10 text-blue-600" : "bg-purple-500/10 text-purple-600")}>
-                      {m.type === "music" ? <Music className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
-                      {m.type === "music" ? "Música" : "Locução"}
+                    <span className={cn("inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded font-medium", badgeConfig.bg)}>
+                      {badgeConfig.icon}
+                      {badgeConfig.label}
                     </span>
                   </td>
                   <td className="px-5 py-4 font-medium text-foreground">{m.title}</td>
@@ -362,19 +375,6 @@ export default function MediaPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 flex-wrap" data-testid="title-upload-dialog">
               <span>Enviar Mídias</span>
-              <span className="text-muted-foreground font-normal">—</span>
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded font-medium",
-                  typeFilter === "music"
-                    ? "bg-blue-500/10 text-blue-600"
-                    : "bg-purple-500/10 text-purple-600",
-                )}
-                data-testid="badge-upload-type"
-              >
-                {typeFilter === "music" ? <Music className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
-                {typeFilter === "music" ? "Música" : "Locução"}
-              </span>
               {uploadClientId && clients?.find((c) => String(c.id) === uploadClientId) && (
                 <span
                   className="inline-flex items-center text-xs px-2 py-0.5 rounded font-medium bg-muted text-muted-foreground"
@@ -489,13 +489,14 @@ export default function MediaPage() {
                           />
                           <Select
                             value={item.type}
-                            onValueChange={(v) => setUploadItems((prev) => prev.map((u, j) => j === i ? { ...u, type: v as "music" | "jingle" } : u))}
+                            onValueChange={(v) => setUploadItems((prev) => prev.map((u, j) => j === i ? { ...u, type: v as "music" | "jingle" | "voiceover" } : u))}
                             disabled={item.status === "uploading" || item.status === "done"}
                           >
-                            <SelectTrigger className="h-7 w-24 text-xs" data-testid={`select-type-${i}`}><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="h-7 w-28 text-xs" data-testid={`select-type-${i}`}><SelectValue /></SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="music">Música</SelectItem>
-                              <SelectItem value="jingle">Locução</SelectItem>
+                              <SelectItem value="music">🎵 Música</SelectItem>
+                              <SelectItem value="jingle">🔔 Jingle</SelectItem>
+                              <SelectItem value="voiceover">🎙️ Locução</SelectItem>
                             </SelectContent>
                           </Select>
                           {/* Action button on the right */}

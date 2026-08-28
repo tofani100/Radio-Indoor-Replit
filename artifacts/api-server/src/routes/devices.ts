@@ -26,17 +26,14 @@ router.post("/devices/register", async (req, res) => {
   // Find all active clients
   const allClients = await db.select().from(clientsTable).where(eq(clientsTable.active, true));
 
-  const matchAuthorized = allClients.find(
+  const resolvedClient = allClients.find(
     (c) =>
       c.masterEmail.toLowerCase() === cleanEmail ||
+      c.email.toLowerCase() === cleanEmail ||
       (c.authorizedEmails ?? []).some((e) => e.toLowerCase() === cleanEmail),
   ) ?? null;
 
-  const matchLogin = !matchAuthorized
-    ? allClients.find((c) => c.email.toLowerCase() === cleanEmail) ?? null
-    : null;
-
-  const resolvedClient = matchAuthorized ?? matchLogin ?? null;
+  const matchAuthorized = !!resolvedClient;
 
   // Check if device already exists by UUID
   const [existing] = await db.select().from(devicesTable).where(eq(devicesTable.uuid, cleanUuid)).limit(1);

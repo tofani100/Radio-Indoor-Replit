@@ -9,6 +9,8 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 
+export const APP_VERSION = "V20";
+
 const NAV_ITEMS = [
   { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { href: "/clients", icon: Users, label: "Clientes" },
@@ -43,8 +45,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-sidebar-primary flex-none">
           <Radio className="w-4 h-4 text-sidebar-primary-foreground" />
         </div>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-sidebar-foreground tracking-tight">Radio Indoor</p>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-sidebar-foreground tracking-tight">Radio Indoor</p>
+            <span
+              data-testid="badge-version"
+              className="px-2 py-0.5 rounded-full bg-primary text-primary-foreground font-mono text-[11px] font-bold tracking-wide shadow-sm"
+            >
+              {APP_VERSION}
+            </span>
+          </div>
           <p className="text-[10px] text-sidebar-foreground/50 uppercase tracking-widest">Painel Admin</p>
         </div>
         {/* Close button — mobile only */}
@@ -97,7 +107,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           Sair
         </button>
         <div className="mt-2 pt-2 border-t border-sidebar-border/50 text-center">
-          <span className="text-[10px] text-sidebar-foreground/40 font-mono">Radio-Indoor v0.2.1</span>
+          <span className="text-[10px] text-sidebar-foreground/50 font-mono font-medium">Radio-Indoor {APP_VERSION}</span>
         </div>
       </div>
     </>

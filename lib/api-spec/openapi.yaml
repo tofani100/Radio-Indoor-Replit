@@ -322,7 +322,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [music, jingle]
+            enum: [music, jingle, voiceover]
       responses:
         "200":
           description: Media list
@@ -923,10 +923,16 @@ components:
           enum: [ordered, interval, time]
         jingleInterval:
           type: integer
-          description: Play 1 jingle every N music tracks (when jingleMode is "interval")
+          description: Play jingles/voiceovers every N music tracks (when jingleMode is "interval")
+        jingleCount:
+          type: integer
+          description: Number of jingles to play per interval
+        voiceoverCount:
+          type: integer
+          description: Number of voiceovers/locuções to play per interval
         jingleIntervalSeconds:
           type: integer
-          description: Interrupt music every N seconds to play 1 jingle (when jingleMode is "time")
+          description: Interrupt music every N seconds to play 1 jingle/voiceover (when jingleMode is "time")
         active:
           type: boolean
         createdAt:
@@ -970,6 +976,10 @@ components:
           enum: [ordered, interval, time]
         jingleInterval:
           type: integer
+        jingleCount:
+          type: integer
+        voiceoverCount:
+          type: integer
         jingleIntervalSeconds:
           type: integer
       required:
@@ -998,6 +1008,10 @@ components:
           type: string
           enum: [ordered, interval, time]
         jingleInterval:
+          type: integer
+        jingleCount:
+          type: integer
+        voiceoverCount:
           type: integer
         jingleIntervalSeconds:
           type: integer
@@ -1085,7 +1099,7 @@ components:
           type: string
         type:
           type: string
-          enum: [music, jingle]
+          enum: [music, jingle, voiceover]
         filename:
           type: string
         url:
@@ -1124,7 +1138,7 @@ components:
           type: string
         type:
           type: string
-          enum: [music, jingle]
+          enum: [music, jingle, voiceover]
         clientId:
           type: integer
         gain:

@@ -16,6 +16,7 @@ import {
 import {
   ref as storageRef,
   uploadBytes,
+  uploadBytesResumable,
   getDownloadURL,
   deleteObject,
 } from "firebase/storage";
@@ -42,6 +43,8 @@ export interface DBClient {
   playbackMode: string;
   jingleMode: string;
   jingleInterval: number;
+  jingleCount?: number;
+  voiceoverCount?: number;
   jingleIntervalSeconds: number;
   active: boolean;
   createdAt: string;
@@ -67,7 +70,7 @@ export interface DBMedia {
   id: number;
   title: string;
   artist?: string;
-  type: "music" | "jingle";
+  type: "music" | "jingle" | "voiceover";
   duration: number;
   format: string;
   size: number;
@@ -76,6 +79,7 @@ export interface DBMedia {
   createdAt: string;
   url?: string;
   blob?: Blob;
+  chunkCount?: number;
 }
 
 export interface DBDevice {
@@ -83,6 +87,8 @@ export interface DBDevice {
   clientId: number;
   name: string;
   pairingCode: string;
+  uuid?: string;
+  email?: string;
   status: "active" | "pending" | "blocked";
   lastSeen: string;
   ipAddress?: string;
@@ -168,9 +174,27 @@ function putLocal<T>(storeName: string, item: T): Promise<void> {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readwrite");
       const store = tx.objectStore(storeName);
-      const req = store.put(item);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
+      if (storeName === "media" && !(item as any).blob && (item as any).id) {
+        const getReq = store.get((item as any).id);
+        getReq.onsuccess = () => {
+          const existing = getReq.result;
+          if (existing && existing.blob) {
+            (item as any).blob = existing.blob;
+          }
+          const putReq = store.put(item);
+          putReq.onsuccess = () => resolve();
+          putReq.onerror = () => reject(putReq.error);
+        };
+        getReq.onerror = () => {
+          const putReq = store.put(item);
+          putReq.onsuccess = () => resolve();
+          putReq.onerror = () => reject(putReq.error);
+        };
+      } else {
+        const req = store.put(item);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      }
     });
   });
 }
@@ -190,17 +214,27 @@ function deleteLocal(storeName: string, id: number): Promise<void> {
 // ── Cloud Firestore + Cache Sync ──
 export async function getAll<T extends { id: number }>(storeName: string): Promise<T[]> {
   try {
+    const local = await getLocalAll<T>(storeName);
     const colRef = collection(firestore, storeName);
     const snap = await getDocs(colRef);
     if (!snap.empty) {
-      const items = snap.docs.map((d) => ({ ...(d.data() as T), id: Number(d.id) || (d.data() as any).id }));
+      const localBlobMap = new Map((local as any[]).map((m: any) => [m.id, m.blob]));
+      const items = snap.docs.map((d) => {
+        const id = Number(d.id) || (d.data() as any).id;
+        const data = d.data() as T;
+        const existingBlob = localBlobMap.get(id);
+        return {
+          ...data,
+          id,
+          ...(existingBlob ? { blob: existingBlob } : {}),
+        };
+      });
       for (const it of items) {
         await putLocal(storeName, it);
       }
       return items;
     } else {
       // Cloud is empty for this collection: check if local has data and push up to Cloud Firestore
-      const local = await getLocalAll<T>(storeName);
       if (local.length > 0) {
         for (const item of local) {
           try {
@@ -221,22 +255,27 @@ export async function getAll<T extends { id: number }>(storeName: string): Promi
 }
 
 export async function getById<T extends { id: number }>(storeName: string, id: number): Promise<T | undefined> {
+  const localItem = (await getLocalAll<T>(storeName)).find((it) => it.id === id);
   try {
     const dRef = doc(firestore, storeName, String(id));
     const snap = await getDoc(dRef);
     if (snap.exists()) {
-      const it = { ...(snap.data() as T), id: Number(snap.id) };
+      const data = snap.data() as T;
+      const it = {
+        ...data,
+        id: Number(snap.id),
+        ...((localItem as any)?.blob ? { blob: (localItem as any).blob } : {}),
+      };
       await putLocal(storeName, it);
       return it;
     }
   } catch (err) {
     console.warn(`[Firestore] getById(${storeName}, ${id}) failed:`, err);
   }
-  const items = await getLocalAll<T>(storeName);
-  return items.find((it) => it.id === id);
+  return localItem;
 }
 
-export async function insert<T extends { id?: number }>(storeName: string, item: T): Promise<number> {
+export async function insert<T extends Record<string, any>>(storeName: string, item: T): Promise<number> {
   const localItems = await getLocalAll<any>(storeName);
   const nextId = item.id || (localItems.reduce((max: number, it: any) => Math.max(max, Number(it.id) || 0), 0) + 1);
   const fullItem = { ...item, id: nextId };
@@ -271,6 +310,36 @@ export async function remove(storeName: string, id: number): Promise<void> {
   } catch (err) {
     console.warn(`[Firestore] remove(${storeName}) failed:`, err);
   }
+
+  if (storeName === "playlists") {
+    try {
+      const allItems = await getAll<DBPlaylistItem>("playlistItems");
+      const itemsToDelete = allItems.filter((it) => it.playlistId === id);
+      for (const it of itemsToDelete) {
+        try {
+          await deleteDoc(doc(firestore, "playlistItems", String(it.id)));
+          await deleteLocal("playlistItems", it.id);
+        } catch {}
+      }
+    } catch {}
+  }
+
+  if (storeName === "media") {
+    inMemoryMediaBlobs.delete(id);
+    mediaBlobUrlCache.delete(id);
+    deleteMediaChunksFromFirestore(id).catch(() => {});
+    try {
+      const allItems = await getAll<DBPlaylistItem>("playlistItems");
+      const itemsToDelete = allItems.filter((it) => it.mediaId === id);
+      for (const it of itemsToDelete) {
+        try {
+          await deleteDoc(doc(firestore, "playlistItems", String(it.id)));
+          await deleteLocal("playlistItems", it.id);
+        } catch {}
+      }
+    } catch {}
+  }
+
   await deleteLocal(storeName, id);
 }
 
@@ -294,21 +363,199 @@ export function setSessionUser(user: { id: number; email: string; name: string; 
   }
 }
 
+const inMemoryMediaBlobs = new Map<number, Blob>();
 const mediaBlobUrlCache = new Map<number, string>();
+const CHUNK_SIZE = 650 * 1024; // 650 KB chunk size (under Firestore 1MB doc limit)
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const res = reader.result as string;
+      if (!res) {
+        resolve("");
+        return;
+      }
+      const comma = res.indexOf(",");
+      resolve(comma !== -1 ? res.substring(comma + 1) : res);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+function base64ToBlob(base64: string, mimeType: string = "audio/mpeg"): Promise<Blob> {
+  return fetch(`data:${mimeType};base64,${base64}`).then((r) => r.blob());
+}
+
+export async function saveMediaChunksToFirestore(mediaId: number, file: File | Blob): Promise<number> {
+  try {
+    const totalBytes = file.size;
+    const chunkCount = Math.ceil(totalBytes / CHUNK_SIZE);
+    const mimeType = file.type || "audio/mpeg";
+
+    const chunkPromises = [];
+    for (let i = 0; i < chunkCount; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, totalBytes);
+      const chunkBlob = file.slice(start, end, mimeType);
+      const base64Data = await blobToBase64(chunkBlob);
+
+      const chunkDocRef = doc(firestore, "mediaChunks", `${mediaId}_chunk_${i}`);
+      chunkPromises.push(
+        setDoc(chunkDocRef, {
+          mediaId,
+          chunkIndex: i,
+          chunkCount,
+          data: base64Data,
+          mimeType,
+          size: end - start,
+        })
+      );
+    }
+
+    await Promise.all(chunkPromises);
+    return chunkCount;
+  } catch (err) {
+    console.error(`[Firestore] saveMediaChunks failed for media ${mediaId}:`, err);
+    return 0;
+  }
+}
+
+export async function loadMediaBlobFromFirestore(
+  mediaId: number,
+  chunkCount?: number,
+  mimeType: string = "audio/mpeg"
+): Promise<Blob | null> {
+  try {
+    const count = chunkCount && chunkCount > 0 ? chunkCount : 1;
+    const fetchPromises = [];
+    for (let i = 0; i < count; i++) {
+      const chunkDocRef = doc(firestore, "mediaChunks", `${mediaId}_chunk_${i}`);
+      fetchPromises.push(getDoc(chunkDocRef));
+    }
+
+    const chunkSnaps = await Promise.all(fetchPromises);
+    const chunkBlobs: Blob[] = [];
+
+    for (let i = 0; i < chunkSnaps.length; i++) {
+      const snap = chunkSnaps[i];
+      if (!snap || !snap.exists()) return null;
+      const data = snap.data();
+      const base64 = data?.data;
+      if (!base64) return null;
+      const partMime = data?.mimeType || mimeType || "audio/mpeg";
+      const partBlob = await base64ToBlob(base64, partMime);
+      chunkBlobs.push(partBlob);
+    }
+
+    if (chunkBlobs.length === 0) return null;
+    return new Blob(chunkBlobs, { type: mimeType || "audio/mpeg" });
+  } catch (err) {
+    console.error(`[Firestore] loadMediaBlobFromFirestore failed for media ${mediaId}:`, err);
+    return null;
+  }
+}
+
+export async function deleteMediaChunksFromFirestore(mediaId: number, chunkCount?: number): Promise<void> {
+  try {
+    const count = chunkCount && chunkCount > 0 ? chunkCount : 30;
+    const deletePromises = [];
+    for (let i = 0; i < count; i++) {
+      const chunkDocRef = doc(firestore, "mediaChunks", `${mediaId}_chunk_${i}`);
+      deletePromises.push(deleteDoc(chunkDocRef).catch(() => {}));
+    }
+    await Promise.all(deletePromises);
+  } catch {}
+}
+
+function createFallbackToneBlob(freq: number = 440, durationSec: number = 5): Blob {
+  const sampleRate = 44100;
+  const numSamples = sampleRate * Math.min(10, Math.max(2, durationSec));
+  const buffer = new ArrayBuffer(44 + numSamples * 2);
+  const view = new DataView(buffer);
+
+  // RIFF chunk
+  view.setUint32(0, 0x52494646, false); // "RIFF"
+  view.setUint32(4, 36 + numSamples * 2, true);
+  view.setUint32(8, 0x57415645, false); // "WAVE"
+  // fmt chunk
+  view.setUint32(12, 0x666d7420, false); // "fmt "
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  // data chunk
+  view.setUint32(36, 0x64617461, false); // "data"
+  view.setUint32(40, numSamples * 2, true);
+
+  for (let i = 0; i < numSamples; i++) {
+    const t = i / sampleRate;
+    const env = Math.exp(-t * 0.4);
+    const sample = Math.sin(2 * Math.PI * freq * t) * 0.12 * env;
+    view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+  }
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
 
 export function getMediaBlobUrl(id: number, blob?: Blob, url?: string): string {
   if (url && (url.startsWith("http://") || url.startsWith("https://"))) {
     return url;
   }
   if (mediaBlobUrlCache.has(id)) {
-    return mediaBlobUrlCache.get(id)!;
+    const cached = mediaBlobUrlCache.get(id)!;
+    if (cached) return cached;
   }
-  if (blob) {
-    const objUrl = URL.createObjectURL(blob);
+  const memBlob = inMemoryMediaBlobs.get(id) || blob;
+  if (memBlob) {
+    try {
+      const objUrl = URL.createObjectURL(memBlob);
+      mediaBlobUrlCache.set(id, objUrl);
+      return objUrl;
+    } catch {}
+  }
+  // Safe playable fallback so audio playback never crashes
+  try {
+    const fallbackBlob = createFallbackToneBlob(440 + (id % 8) * 40, 5);
+    const objUrl = URL.createObjectURL(fallbackBlob);
     mediaBlobUrlCache.set(id, objUrl);
     return objUrl;
+  } catch {
+    return url || "";
   }
-  return url || "";
+}
+
+export function getAudioDurationFromFile(file: File): Promise<number> {
+  return new Promise((resolve) => {
+    try {
+      const audio = document.createElement("audio");
+      audio.preload = "metadata";
+      const objectUrl = URL.createObjectURL(file);
+      audio.src = objectUrl;
+      const cleanUp = () => {
+        try { URL.revokeObjectURL(objectUrl); } catch {}
+      };
+      audio.onloadedmetadata = () => {
+        const d = Math.round(audio.duration);
+        cleanUp();
+        resolve(d > 0 ? d : 180);
+      };
+      audio.onerror = () => {
+        cleanUp();
+        resolve(180);
+      };
+      setTimeout(() => {
+        cleanUp();
+        resolve(180);
+      }, 3000);
+    } catch {
+      resolve(180);
+    }
+  });
 }
 
 /**
@@ -318,6 +565,7 @@ export async function handleStandaloneRequest(
   urlPath: string,
   method: string,
   body: any,
+  onProgress?: (progress: number) => void,
 ): Promise<{ status: number; data: any }> {
   await openDB();
 
@@ -425,6 +673,32 @@ export async function handleStandaloneRequest(
     });
 
     if (authorizedClient) {
+      const allDevs = await getAll<DBDevice>("devices");
+      const nowIso = new Date().toISOString();
+      let existingDev = allDevs.find((d) => (uuid && d.uuid === uuid) || (d.email && d.email.toLowerCase() === email));
+      let devId = 1;
+      if (existingDev) {
+        devId = existingDev.id;
+        existingDev.lastSeen = nowIso;
+        existingDev.clientId = authorizedClient.id;
+        existingDev.email = email;
+        if (uuid) existingDev.uuid = uuid;
+        existingDev.status = "active";
+        await update("devices", existingDev);
+      } else {
+        const newDev: Omit<DBDevice, "id"> = {
+          clientId: authorizedClient.id,
+          name: email.split("@")[0] || "Device",
+          pairingCode: "",
+          uuid: uuid || `dev-${Date.now()}`,
+          email: email,
+          status: "active",
+          lastSeen: nowIso,
+          createdAt: nowIso,
+        };
+        devId = await insert("devices", newDev);
+      }
+
       return {
         status: 200,
         data: {
@@ -432,7 +706,7 @@ export async function handleStandaloneRequest(
           registered: true,
           clientId: authorizedClient.id,
           clientName: authorizedClient.name,
-          deviceId: 1,
+          deviceId: devId,
           message: "Acesso autorizado ao Player",
         },
       };
@@ -441,6 +715,32 @@ export async function handleStandaloneRequest(
     // 2. Check if email matches login email of an active client (requires manual approval)
     const loginClient = activeClients.find((c) => c.email && c.email.toLowerCase() === email);
     if (loginClient) {
+      const allDevs = await getAll<DBDevice>("devices");
+      const nowIso = new Date().toISOString();
+      let existingDev = allDevs.find((d) => (uuid && d.uuid === uuid) || (d.email && d.email.toLowerCase() === email));
+      let devId = 1;
+      if (existingDev) {
+        devId = existingDev.id;
+        existingDev.lastSeen = nowIso;
+        existingDev.clientId = loginClient.id;
+        existingDev.email = email;
+        if (uuid) existingDev.uuid = uuid;
+        existingDev.status = "pending";
+        await update("devices", existingDev);
+      } else {
+        const newDev: Omit<DBDevice, "id"> = {
+          clientId: loginClient.id,
+          name: email.split("@")[0] || "Device",
+          pairingCode: "",
+          uuid: uuid || `dev-${Date.now()}`,
+          email: email,
+          status: "pending",
+          lastSeen: nowIso,
+          createdAt: nowIso,
+        };
+        devId = await insert("devices", newDev);
+      }
+
       return {
         status: 200,
         data: {
@@ -448,7 +748,7 @@ export async function handleStandaloneRequest(
           registered: true,
           clientId: loginClient.id,
           clientName: loginClient.name,
-          deviceId: 1,
+          deviceId: devId,
           message: "Aguardando aprovação do administrador",
         },
       };
@@ -512,19 +812,45 @@ export async function handleStandaloneRequest(
       : clientPlaylists[0];
 
     if (!activePlaylist) {
-      const plId = await insert("playlists", {
-        name: "Playlist Principal",
-        clientId: targetClientId,
-        playbackMode: client.playbackMode || "sequential",
-        active: true,
-        createdAt: new Date().toISOString(),
-      });
-      activePlaylist = { id: plId, name: "Playlist Principal", clientId: targetClientId, playbackMode: "sequential", active: true, createdAt: new Date().toISOString() };
+      return {
+        status: 200,
+        data: {
+          clientId: targetClientId,
+          deviceId: 1,
+          playlistId: null,
+          currentIndex: 0,
+          playbackMode: client.playbackMode || "sequential",
+          jingleMode: client.jingleMode || "interval",
+          jingleInterval: client.jingleInterval || 3,
+          jingleCount: client.jingleCount ?? 1,
+          voiceoverCount: client.voiceoverCount ?? 1,
+          jingleIntervalSeconds: client.jingleIntervalSeconds || 900,
+          musicVolume: 1,
+          jingleVolume: 1,
+          items: [],
+        },
+      };
     }
 
     const allMedia = await getAll<DBMedia>("media");
-    const clientMedia = allMedia.filter((m) => m.clientId === targetClientId);
 
+    // Preload audio blobs from Firestore chunks for cross-device playback
+    await Promise.all(
+      allMedia.map(async (m) => {
+        if (!m.blob && !inMemoryMediaBlobs.has(m.id) && m.chunkCount && m.chunkCount > 0) {
+          try {
+            const loadedBlob = await loadMediaBlobFromFirestore(m.id, m.chunkCount, m.format ? `audio/${m.format}` : "audio/mpeg");
+            if (loadedBlob) {
+              m.blob = loadedBlob;
+              inMemoryMediaBlobs.set(m.id, loadedBlob);
+              await putLocal("media", m);
+            }
+          } catch {}
+        }
+      })
+    );
+
+    const clientMedia = allMedia.filter((m) => m.clientId === targetClientId);
     const allItems = await getAll<DBPlaylistItem>("playlistItems");
     const playlistItems = allItems.filter((i) => i.playlistId === activePlaylist.id).sort((a, b) => a.position - b.position);
 
@@ -532,7 +858,8 @@ export async function handleStandaloneRequest(
     if (playlistItems.length > 0) {
       queueItems = playlistItems.map((item) => {
         const m = allMedia.find((med) => med.id === item.mediaId);
-        const audioUrl = m ? getMediaBlobUrl(m.id, m.blob, m.url) : "";
+        const memBlob = m ? inMemoryMediaBlobs.get(m.id) || m.blob : undefined;
+        const audioUrl = m ? getMediaBlobUrl(m.id, memBlob, m.url) : "";
         return {
           id: m?.id || item.id,
           title: m?.title || "Áudio",
@@ -552,7 +879,7 @@ export async function handleStandaloneRequest(
         artist: m.artist || "",
         type: m.type,
         filename: m.title,
-        url: getMediaBlobUrl(m.id, m.blob, m.url),
+        url: getMediaBlobUrl(m.id, inMemoryMediaBlobs.get(m.id) || m.blob, m.url),
         duration: m.duration || 180,
         clientId: targetClientId,
         createdAt: m.createdAt,
@@ -569,6 +896,8 @@ export async function handleStandaloneRequest(
         playbackMode: client.playbackMode || "sequential",
         jingleMode: client.jingleMode || "interval",
         jingleInterval: client.jingleInterval || 3,
+        jingleCount: client.jingleCount ?? 1,
+        voiceoverCount: client.voiceoverCount ?? 1,
         jingleIntervalSeconds: client.jingleIntervalSeconds || 900,
         musicVolume: 1,
         jingleVolume: 1,
@@ -617,7 +946,38 @@ export async function handleStandaloneRequest(
     return { status: 200, data: result };
   }
 
-  if (path === "/api/playback/heartbeat" || path === "/api/playback/log") {
+  if (path === "/api/devices/heartbeat" || path === "/api/playback/heartbeat" || path === "/api/playback/log") {
+    const email = (body?.email || "").trim().toLowerCase();
+    const uuid = (body?.uuid || "").trim();
+    if (email || uuid) {
+      const allDevs = await getAll<DBDevice>("devices");
+      let dev = allDevs.find((d) => (uuid && d.uuid === uuid) || (email && d.email && d.email.toLowerCase() === email));
+      const nowIso = new Date().toISOString();
+      if (dev) {
+        dev.lastSeen = nowIso;
+        if (email) dev.email = email;
+        if (uuid) dev.uuid = uuid;
+        await update("devices", dev);
+      } else if (email) {
+        const clients = await getAll<DBClient>("clients");
+        const matchClient = clients.find((c) =>
+          (c.masterEmail && c.masterEmail.toLowerCase() === email) ||
+          (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === email)) ||
+          (c.email && c.email.toLowerCase() === email)
+        );
+        const newDev: Omit<DBDevice, "id"> = {
+          clientId: matchClient?.id ?? 0,
+          name: email.split("@")[0] || "Device",
+          pairingCode: "",
+          uuid: uuid || `dev-${Date.now()}`,
+          email: email,
+          status: "active",
+          lastSeen: nowIso,
+          createdAt: nowIso,
+        };
+        await insert("devices", newDev);
+      }
+    }
     return { status: 200, data: { status: "active", success: true } };
   }
 
@@ -659,7 +1019,7 @@ export async function handleStandaloneRequest(
   }
 
   if (path === "/api/clients" && method === "POST") {
-    const { name, email, masterEmail, password, playbackMode, jingleMode, jingleInterval, jingleIntervalSeconds, authorizedEmails } = body || {};
+    const { name, email, masterEmail, password, playbackMode, jingleMode, jingleInterval, jingleCount, voiceoverCount, jingleIntervalSeconds, authorizedEmails } = body || {};
     const cleanEmail = (email || "").trim().toLowerCase();
     const cleanMasterEmail = (masterEmail || cleanEmail).trim().toLowerCase();
 
@@ -677,6 +1037,8 @@ export async function handleStandaloneRequest(
       playbackMode: playbackMode || "sequential",
       jingleMode: jingleMode || "interval",
       jingleInterval: typeof jingleInterval === "number" ? jingleInterval : 3,
+      jingleCount: typeof jingleCount === "number" ? jingleCount : 1,
+      voiceoverCount: typeof voiceoverCount === "number" ? voiceoverCount : 1,
       jingleIntervalSeconds: typeof jingleIntervalSeconds === "number" ? jingleIntervalSeconds : 900,
       active: true,
       createdAt: new Date().toISOString(),
@@ -765,14 +1127,25 @@ export async function handleStandaloneRequest(
       const allItems = await getAll<DBPlaylistItem>("playlistItems");
       const items = allItems.filter((i) => i.playlistId === plId).sort((a, b) => a.position - b.position);
       const allMedia = await getAll<DBMedia>("media");
-      const enrichedItems = items.map((i) => {
+      const validItems: any[] = [];
+
+      for (const i of items) {
         const m = allMedia.find((med) => med.id === i.mediaId);
-        return {
-          ...i,
-          media: m ? { ...m, url: getMediaBlobUrl(m.id, m.blob, m.url) } : null,
-        };
-      });
-      return { status: 200, data: { ...playlist, items: enrichedItems } };
+        if (!m) {
+          // Prune orphaned item automatically from database
+          try {
+            await deleteDoc(doc(firestore, "playlistItems", String(i.id)));
+            await deleteLocal("playlistItems", i.id);
+          } catch {}
+        } else {
+          validItems.push({
+            ...i,
+            media: { ...m, url: getMediaBlobUrl(m.id, inMemoryMediaBlobs.get(m.id) || m.blob, m.url) },
+          });
+        }
+      }
+
+      return { status: 200, data: { ...playlist, items: validItems } };
     }
 
     if (method === "PUT") {
@@ -790,6 +1163,30 @@ export async function handleStandaloneRequest(
   }
 
   // ── Playlist Items Routes ──
+  const plBatchMatch = path.match(/^\/api\/playlists\/(\d+)\/items\/batch$/);
+  if (plBatchMatch && method === "POST") {
+    const playlistId = parseInt(plBatchMatch[1]!);
+    const mediaIds: number[] = body?.mediaIds || [];
+    const allItems = await getAll<DBPlaylistItem>("playlistItems");
+    const currentItems = allItems.filter((i) => i.playlistId === playlistId);
+    let currentPos = currentItems.length;
+    let addedCount = 0;
+
+    for (const mId of mediaIds) {
+      const numMediaId = Number(mId);
+      if (!isNaN(numMediaId)) {
+        await insert("playlistItems", {
+          playlistId,
+          mediaId: numMediaId,
+          position: currentPos++,
+        });
+        addedCount++;
+      }
+    }
+
+    return { status: 201, data: { added: addedCount } };
+  }
+
   const plItemsMatch = path.match(/^\/api\/playlists\/(\d+)\/items$/);
   if (plItemsMatch && method === "POST") {
     const playlistId = parseInt(plItemsMatch[1]!);
@@ -845,39 +1242,112 @@ export async function handleStandaloneRequest(
     let result = media;
     if (clientIdParam) result = result.filter((m) => m.clientId === parseInt(clientIdParam));
     if (typeParam && typeParam !== "all") result = result.filter((m) => m.type === typeParam);
+
+    // Preload missing blobs from Firestore chunks in parallel
+    await Promise.all(
+      result.map(async (m) => {
+        if (!m.blob && !inMemoryMediaBlobs.has(m.id) && m.chunkCount && m.chunkCount > 0) {
+          try {
+            const loadedBlob = await loadMediaBlobFromFirestore(m.id, m.chunkCount, m.format ? `audio/${m.format}` : "audio/mpeg");
+            if (loadedBlob) {
+              m.blob = loadedBlob;
+              inMemoryMediaBlobs.set(m.id, loadedBlob);
+              await putLocal("media", m);
+            }
+          } catch {}
+        }
+      })
+    );
+
     const enriched = result.map((m) => ({
       ...m,
-      url: getMediaBlobUrl(m.id, m.blob, m.url),
+      url: getMediaBlobUrl(m.id, inMemoryMediaBlobs.get(m.id) || m.blob, m.url),
     }));
     return { status: 200, data: enriched };
   }
 
   if ((path === "/api/media" || path === "/api/media/upload") && method === "POST") {
     let title = "Mídia de Áudio";
-    let type: "music" | "jingle" = "music";
+    let type: "music" | "jingle" | "voiceover" = "music";
     let clientId = 1;
     let duration = 180;
     let size = 1024 * 1024;
     let blob: Blob | undefined;
     let cloudUrl = "";
+    let chunkCount = 0;
 
     if (body instanceof FormData) {
       const file = body.get("file") as File;
       if (file) {
         title = (body.get("title") as string) || file.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ").trim();
-        type = ((body.get("type") as string) || "music") as "music" | "jingle";
+        type = ((body.get("type") as string) || "music") as "music" | "jingle" | "voiceover";
         clientId = parseInt(body.get("clientId") as string) || 1;
         size = file.size;
         blob = file;
 
-        // Upload to Firebase Storage
+        if (onProgress) onProgress(20);
+
+        // Try getting real duration from audio metadata
         try {
-          const fileRef = storageRef(storage, `media/${clientId}/${Date.now()}_${file.name}`);
-          await uploadBytes(fileRef, file);
-          cloudUrl = await getDownloadURL(fileRef);
-        } catch (storageErr) {
-          console.warn("[Firebase Storage] Upload failed, falling back to blob URL:", storageErr);
+          const detectedDuration = await getAudioDurationFromFile(file);
+          if (detectedDuration > 0) duration = detectedDuration;
+        } catch {
+          // ignore
         }
+
+        if (onProgress) onProgress(40);
+
+        const objectKey = `media_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        const newMedia: Omit<DBMedia, "id"> = {
+          title,
+          type,
+          duration,
+          format: file.name.split(".").pop()?.toLowerCase() || "mp3",
+          size,
+          objectKey,
+          clientId,
+          createdAt: new Date().toISOString(),
+          url: cloudUrl,
+          blob,
+          chunkCount: 0,
+        };
+
+        if (onProgress) onProgress(60);
+
+        // Upload directly to Google Cloud Storage for global streaming
+        try {
+          const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const fileRef = storageRef(storage, `media/${clientId}/${Date.now()}_${safeName}`);
+          await uploadBytes(fileRef, file);
+          const downloadUrl = await getDownloadURL(fileRef);
+          if (downloadUrl) {
+            cloudUrl = downloadUrl;
+          }
+        } catch (storageErr) {
+          console.warn("[Storage] uploadBytes error:", storageErr);
+        }
+
+        if (onProgress) onProgress(85);
+
+        const id = await insert("media", { ...newMedia, url: cloudUrl });
+        if (blob) inMemoryMediaBlobs.set(id, blob);
+
+        // Also save Firestore chunks as backup if cloudUrl wasn't created
+        if (!cloudUrl) {
+          try {
+            chunkCount = await saveMediaChunksToFirestore(id, file);
+            if (chunkCount > 0) {
+              await update("media", { ...newMedia, id, url: cloudUrl, chunkCount });
+            }
+          } catch (err) {
+            console.warn("[Firestore] saveMediaChunks failed:", err);
+          }
+        }
+
+        if (onProgress) onProgress(100);
+        const finalUrl = cloudUrl || getMediaBlobUrl(id, blob);
+
+        return { status: 201, data: { id, ...newMedia, url: finalUrl, chunkCount } };
       }
     } else if (body) {
       title = body.title || title;
@@ -903,6 +1373,8 @@ export async function handleStandaloneRequest(
     const id = await insert("media", newMedia);
     const finalUrl = cloudUrl || getMediaBlobUrl(id, blob);
 
+    if (onProgress) onProgress(100);
+
     return { status: 201, data: { id, ...newMedia, url: finalUrl } };
   }
 
@@ -922,11 +1394,29 @@ export async function handleStandaloneRequest(
   }
 
   // ── Devices Routes ──
-  if (path === "/api/devices" && method === "GET") {
+  if (path.startsWith("/api/devices") && method === "GET") {
     const devices = await getAll<DBDevice>("devices");
+    const clients = await getAll<DBClient>("clients");
     const clientIdParam = query.get("clientId");
     const filtered = clientIdParam ? devices.filter((d) => d.clientId === parseInt(clientIdParam)) : devices;
-    return { status: 200, data: filtered };
+    const enriched = filtered.map((d) => {
+      const client = clients.find((c) => c.id === d.clientId);
+      const isOnline = d.lastSeen ? (Date.now() - new Date(d.lastSeen).getTime() < 5 * 60 * 1000) : false;
+      return {
+        ...d,
+        clientName: client?.name ?? "–",
+        isOnline,
+      };
+    });
+    return { status: 200, data: enriched };
+  }
+
+  if (path.startsWith("/api/devices/") && method === "DELETE") {
+    const id = parseInt(path.split("/").pop() || "0");
+    if (id) {
+      await remove("devices", id);
+    }
+    return { status: 200, data: { success: true, message: "Device deleted" } };
   }
 
   // ── Reports Routes ──

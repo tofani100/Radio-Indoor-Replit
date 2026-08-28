@@ -36,32 +36,41 @@ function hmsToSeconds(v: string): number {
 type Client = {
   id: number; name: string; email: string; masterEmail: string;
   authorizedEmails?: string[];
-  playbackMode: string; jingleMode: string; jingleInterval?: number; jingleIntervalSeconds?: number;
+  playbackMode: string; jingleMode: string; jingleInterval?: number; jingleCount?: number; voiceoverCount?: number; jingleIntervalSeconds?: number;
   active: boolean; deviceCount?: number; mediaCount?: number; createdAt: string;
 };
+
+function getClientEmails(client?: Client): string[] {
+  if (!client) return [];
+  const set = new Set<string>();
+  if (client.authorizedEmails) {
+    client.authorizedEmails.forEach((e) => e && set.add(e.trim().toLowerCase()));
+  }
+  if (client.masterEmail && !client.masterEmail.includes("@cliente.radioindoor.com")) {
+    set.add(client.masterEmail.trim().toLowerCase());
+  }
+  if (client.email && !client.email.includes("@cliente.radioindoor.com")) {
+    set.add(client.email.trim().toLowerCase());
+  }
+  return Array.from(set);
+}
 
 function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => void; client?: Client }) {
   const qc = useQueryClient();
   const { toast } = useToast();
-  // Initialize form from `client` on every mount. Parent uses a `key`
-  // tied to client.id so this component re-mounts whenever a different
-  // client is being edited — which guarantees fresh state.
+
   const [form, setForm] = useState({
     name: client?.name ?? "",
-    email: client?.email ?? "",
-    masterEmail: client?.masterEmail ?? "",
-    password: "",
     playbackMode: client?.playbackMode ?? "sequential",
     jingleMode: client?.jingleMode ?? "interval",
     jingleInterval: String(client?.jingleInterval ?? 3),
+    jingleCount: String(client?.jingleCount ?? 1),
+    voiceoverCount: String(client?.voiceoverCount ?? 1),
     jingleIntervalSeconds: String(client?.jingleIntervalSeconds ?? 900),
   });
-  const [authorizedEmails, setAuthorizedEmails] = useState<string[]>(
-    client?.authorizedEmails ?? [],
-  );
+  const [authorizedEmails, setAuthorizedEmails] = useState<string[]>(() => getClientEmails(client));
   const [emailInput, setEmailInput] = useState("");
   const [emailError, setEmailError] = useState<string | null>(null);
-  const [showPassword, setShowPassword] = useState(false);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: getListClientsQueryKey() });
@@ -73,7 +82,7 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
   const create = useCreateClient({
     mutation: {
       onSuccess: () => {
-        toast({ title: "Cliente criado com sucesso", description: "Playlist principal inicial gerada automaticamente." });
+        toast({ title: "Cliente criado com sucesso", description: "Playlist principal gerada automaticamente." });
         invalidate();
       },
       onError: (err: any) => {
@@ -107,10 +116,6 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
       setEmailError("Email já adicionado");
       return;
     }
-    if (v === form.email.trim().toLowerCase() || v === form.masterEmail.trim().toLowerCase()) {
-      setEmailError("Já é o email principal ou master");
-      return;
-    }
     setAuthorizedEmails([...authorizedEmails, v]);
     setEmailInput("");
     setEmailError(null);
@@ -131,20 +136,27 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (emailInput.trim()) {
+      addEmail();
+    }
+
     const payload = {
-      name: form.name,
-      email: form.email,
-      masterEmail: form.masterEmail,
+      name: form.name.trim(),
+      email: authorizedEmails[0] || undefined,
+      masterEmail: authorizedEmails[0] || undefined,
       authorizedEmails,
       playbackMode: form.playbackMode as "sequential" | "shuffle",
       jingleMode: form.jingleMode as "ordered" | "interval" | "time",
-      jingleInterval: parseInt(form.jingleInterval),
-      jingleIntervalSeconds: parseInt(form.jingleIntervalSeconds),
+      jingleInterval: parseInt(form.jingleInterval) || 3,
+      jingleCount: parseInt(form.jingleCount) || 1,
+      voiceoverCount: parseInt(form.voiceoverCount) || 1,
+      jingleIntervalSeconds: parseInt(form.jingleIntervalSeconds) || 900,
     };
+
     if (client) {
       update.mutate({ clientId: client.id, data: payload });
     } else {
-      create.mutate({ data: { ...payload, password: form.password } });
+      create.mutate({ data: payload });
     }
   };
 
@@ -157,31 +169,32 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
           <DialogTitle>{client ? "Editar Cliente" : "Novo Cliente"}</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div><Label>Nome</Label><Input data-testid="input-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
           <div>
-            <Label>Email de Login (admin do cliente)</Label>
-            <Input data-testid="input-email" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
-            <p className="text-[11px] text-muted-foreground mt-1">Devices que entrarem com este email vão para aprovação manual.</p>
-          </div>
-          <div>
-            <Label>Email Master (auto-aprovação)</Label>
-            <Input data-testid="input-master-email" type="email" value={form.masterEmail} onChange={(e) => setForm({ ...form, masterEmail: e.target.value })} required />
-            <p className="text-[11px] text-muted-foreground mt-1">Devices com este email são aprovados automaticamente.</p>
+            <Label>Nome do Cliente</Label>
+            <Input
+              data-testid="input-name"
+              placeholder="Ex: Pefisa, Pernambucanas..."
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              required
+            />
           </div>
 
           <div>
-            <Label className="flex items-center gap-2">
-              <Mail className="w-3.5 h-3.5" /> Emails Autorizados ({authorizedEmails.length})
+            <Label className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <Mail className="w-3.5 h-3.5 text-primary" /> E-mails com Acesso ao Player ({authorizedEmails.length})
+              </span>
             </Label>
             <div
               data-testid="authorized-emails-list"
-              className="mt-1 flex flex-wrap gap-1.5 p-2 min-h-[42px] rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring"
+              className="mt-1 flex flex-wrap gap-1.5 p-2 min-h-[46px] rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring"
             >
               {authorizedEmails.map((mail) => (
                 <span
                   key={mail}
                   data-testid={`authorized-email-${mail}`}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded bg-primary/10 text-primary text-xs"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary/10 text-primary text-xs font-medium"
                 >
                   {mail}
                   <button
@@ -189,57 +202,45 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
                     aria-label={`Remover ${mail}`}
                     data-testid={`button-remove-email-${mail}`}
                     onClick={() => removeEmail(mail)}
-                    className="hover:text-destructive"
+                    className="hover:text-destructive transition-colors ml-0.5"
                   >
                     <X className="w-3 h-3" />
                   </button>
                 </span>
               ))}
-              <input
-                data-testid="input-authorized-email"
-                type="email"
-                value={emailInput}
-                onChange={(e) => { setEmailInput(e.target.value); setEmailError(null); }}
-                onKeyDown={handleEmailKeyDown}
-                onBlur={() => emailInput.trim() && addEmail()}
-                placeholder={authorizedEmails.length === 0 ? "email@dominio.com (Enter para adicionar)" : "+ adicionar"}
-                className="flex-1 min-w-[140px] bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
-              />
+              <div className="flex-1 flex items-center min-w-[160px] gap-1">
+                <input
+                  data-testid="input-authorized-email"
+                  type="email"
+                  value={emailInput}
+                  onChange={(e) => { setEmailInput(e.target.value); setEmailError(null); }}
+                  onKeyDown={handleEmailKeyDown}
+                  onBlur={() => emailInput.trim() && addEmail()}
+                  placeholder={authorizedEmails.length === 0 ? "Digite o email e tecle Enter..." : "+ adicionar outro email"}
+                  className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+                />
+                {emailInput.trim() && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-2 text-xs text-primary font-semibold"
+                    onClick={addEmail}
+                  >
+                    Adicionar
+                  </Button>
+                )}
+              </div>
             </div>
             {emailError ? (
               <p className="text-[11px] text-destructive mt-1">{emailError}</p>
             ) : (
               <p className="text-[11px] text-muted-foreground mt-1">
-                Cada email aqui também é auto-aprovado. Use Enter ou vírgula para adicionar.
+                Qualquer pessoa que digitar um destes e-mails no Player terá acesso imediato às playlists deste cliente.
               </p>
             )}
           </div>
 
-          {!client && (
-            <div>
-              <Label>Senha</Label>
-              <div className="relative">
-                <Input
-                  data-testid="input-password"
-                  type={showPassword ? "text" : "password"}
-                  value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                  required={!client}
-                  className="pr-10"
-                />
-                <button
-                  type="button"
-                  data-testid="button-toggle-password"
-                  onClick={() => setShowPassword((v) => !v)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground transition-colors"
-                  title={showPassword ? "Ocultar senha" : "Mostrar senha"}
-                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-          )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Modo de Reprodução</Label>
@@ -252,20 +253,62 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
               </Select>
             </div>
             <div>
-              <Label>Modo Locução</Label>
+              <Label>Modo de Programação</Label>
               <Select value={form.jingleMode} onValueChange={(v) => setForm({ ...form, jingleMode: v })}>
                 <SelectTrigger data-testid="select-jingle-mode"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="ordered">Ordenado</SelectItem>
-                  <SelectItem value="interval">Por musicas (N musicas)</SelectItem>
+                  <SelectItem value="interval">Por músicas (Intercalado)</SelectItem>
                   <SelectItem value="time">Por tempo (N minutos)</SelectItem>
+                  <SelectItem value="ordered">Ordenado (conforme playlist)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           </div>
+
           {form.jingleMode === "interval" && (
-            <div><Label>A cada N musicas</Label><Input data-testid="input-jingle-interval" type="number" min={1} value={form.jingleInterval} onChange={(e) => setForm({ ...form, jingleInterval: e.target.value })} /></div>
+            <div className="p-3.5 bg-muted/40 border border-border rounded-lg space-y-3">
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <Label className="text-xs font-semibold">A cada N músicas</Label>
+                  <Input
+                    data-testid="input-jingle-interval"
+                    type="number"
+                    min={1}
+                    value={form.jingleInterval}
+                    onChange={(e) => setForm({ ...form, jingleInterval: e.target.value })}
+                    className="mt-1 h-8 text-xs"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs font-semibold text-amber-600">Tocar Jingles</Label>
+                  <Input
+                    data-testid="input-jingle-count"
+                    type="number"
+                    min={0}
+                    value={form.jingleCount}
+                    onChange={(e) => setForm({ ...form, jingleCount: e.target.value })}
+                    className="mt-1 h-8 text-xs"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs font-semibold text-purple-600">Tocar Locuções</Label>
+                  <Input
+                    data-testid="input-voiceover-count"
+                    type="number"
+                    min={0}
+                    value={form.voiceoverCount}
+                    onChange={(e) => setForm({ ...form, voiceoverCount: e.target.value })}
+                    className="mt-1 h-8 text-xs"
+                  />
+                </div>
+              </div>
+              <div className="text-[11px] text-muted-foreground bg-background/80 p-2 rounded border border-border/50">
+                💡 <strong>Regra:</strong> A cada <strong>{form.jingleInterval || 1} música(s)</strong>, tocará{" "}
+                <strong>{form.jingleCount || 0} jingle(s)</strong> e <strong>{form.voiceoverCount || 0} locução(ões)</strong> (caso existam na playlist).
+              </div>
+            </div>
           )}
+
           {form.jingleMode === "time" && (
             <div>
               <Label>A cada (HH:MM:SS) — interrompe a música</Label>
@@ -282,7 +325,7 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
           )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
-            <Button data-testid="button-submit" type="submit" disabled={busy}>{busy ? "Salvando..." : client ? "Salvar" : "Criar"}</Button>
+            <Button data-testid="button-submit" type="submit" disabled={busy}>{busy ? "Salvando..." : client ? "Salvar" : "Criar Cliente"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -317,10 +360,9 @@ export default function ClientsPage() {
           <thead>
             <tr className="border-b border-card-border bg-muted/30">
               <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Nome</th>
-              <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Email</th>
+              <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">E-mails Autorizados</th>
               <th className="text-center px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Dispositivos</th>
               <th className="text-center px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Mídias</th>
-              <th className="text-center px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide" title="Emails autorizados (master + adicionais)">Emails Autorizados</th>
               <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Modo</th>
               <th className="text-center px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Status</th>
               <th className="px-5 py-3" />
@@ -328,27 +370,36 @@ export default function ClientsPage() {
           </thead>
           <tbody className="divide-y divide-card-border">
             {isLoading && [...Array(4)].map((_, i) => (
-              <tr key={i}><td colSpan={8} className="px-5 py-4"><div className="h-4 bg-muted animate-pulse rounded" /></td></tr>
+              <tr key={i}><td colSpan={7} className="px-5 py-4"><div className="h-4 bg-muted animate-pulse rounded" /></td></tr>
             ))}
             {Array.isArray(clients) && clients.map((c) => {
-              const totalAuthorized = 1 + ((c as Client).authorizedEmails?.length ?? 0); // master + extras
+              const allEmails = getClientEmails(c as Client);
               return (
               <tr key={c.id} data-testid={`row-client-${c.id}`} className="hover:bg-muted/20 transition-colors">
                 <td className="px-5 py-4 font-medium text-foreground">{c.name}</td>
-                <td className="px-5 py-4 text-muted-foreground">{c.email}</td>
+                <td className="px-5 py-4">
+                  {allEmails.length > 0 ? (
+                    <div className="flex flex-wrap gap-1 items-center max-w-sm">
+                      {allEmails.slice(0, 3).map((em) => (
+                        <span key={em} className="text-xs px-2 py-0.5 rounded bg-muted text-foreground border border-border">
+                          {em}
+                        </span>
+                      ))}
+                      {allEmails.length > 3 && (
+                        <span title={allEmails.slice(3).join(", ")} className="text-xs text-muted-foreground px-1 font-medium">
+                          +{allEmails.length - 3} mais
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-muted-foreground italic">Nenhum e-mail adicionado</span>
+                  )}
+                </td>
                 <td className="px-5 py-4 text-center">
                   <span className="inline-flex items-center gap-1 text-muted-foreground"><Monitor className="w-3 h-3" />{c.deviceCount ?? 0}</span>
                 </td>
                 <td className="px-5 py-4 text-center">
                   <span className="inline-flex items-center gap-1 text-muted-foreground"><Users className="w-3 h-3" />{c.mediaCount ?? 0}</span>
-                </td>
-                <td className="px-5 py-4 text-center">
-                  <span
-                    title={[c.masterEmail, ...((c as Client).authorizedEmails ?? [])].join(", ")}
-                    className="inline-flex items-center gap-1 text-muted-foreground"
-                  >
-                    <Mail className="w-3 h-3" />{totalAuthorized}
-                  </span>
                 </td>
                 <td className="px-5 py-4">
                   <span className="text-xs px-2 py-0.5 rounded bg-primary/10 text-primary font-medium capitalize">{c.playbackMode}</span>
@@ -406,7 +457,7 @@ export default function ClientsPage() {
             );
             })}
             {!isLoading && !clients?.length && (
-              <tr><td colSpan={8} className="px-5 py-12 text-center text-muted-foreground">Nenhum cliente cadastrado</td></tr>
+              <tr><td colSpan={7} className="px-5 py-12 text-center text-muted-foreground">Nenhum cliente cadastrado</td></tr>
             )}
           </tbody>
         </table>

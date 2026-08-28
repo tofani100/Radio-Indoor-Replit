@@ -329,7 +329,7 @@ export function DJConsole() {
             <div className="flex flex-col items-center z-10 w-20">
               <div className="h-full py-4">
                 <input 
-                  type="range" orient="vertical" min={0} max={1} step={0.01}
+                  type="range" {...({ orient: "vertical" } as any)} min={0} max={1} step={0.01}
                   value={musicMix} onChange={e => setMusicMix(parseFloat(e.target.value))}
                   className="dj-vertical-slider dj-slider-cyan"
                 />
@@ -346,7 +346,7 @@ export function DJConsole() {
             <div className="flex flex-col items-center z-10 w-20">
               <div className="h-full py-4">
                 <input 
-                  type="range" orient="vertical" min={0} max={1} step={0.01}
+                  type="range" {...({ orient: "vertical" } as any)} min={0} max={1} step={0.01}
                   value={jingleMix} onChange={e => setJingleMix(parseFloat(e.target.value))}
                   className="dj-vertical-slider dj-slider-magenta"
                 />
@@ -363,7 +363,7 @@ export function DJConsole() {
             <div className="flex flex-col items-center z-10 w-20">
               <div className="h-full py-4">
                 <input 
-                  type="range" orient="vertical" min={0} max={1} step={0.01}
+                  type="range" {...({ orient: "vertical" } as any)} min={0} max={1} step={0.01}
                   value={masterVolume} onChange={e => setMasterVolume(parseFloat(e.target.value))}
                   className="dj-vertical-slider"
                 />

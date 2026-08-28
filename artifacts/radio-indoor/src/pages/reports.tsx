@@ -271,7 +271,7 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
 function MediaReport({ clients, startDate, endDate, setStartDate, setEndDate }: SectionProps) {
   const [clientEmail, setClientEmail] = useState("");
   const [mediaId, setMediaId] = useState<string>("");
-  const [typeFilter, setTypeFilter] = useState<"music" | "jingle">("jingle");
+  const [typeFilter, setTypeFilter] = useState<"music" | "jingle" | "voiceover">("jingle");
 
   const { data: allMedia } = useListMedia(
     { type: typeFilter },
@@ -312,11 +312,12 @@ function MediaReport({ clients, startDate, endDate, setStartDate, setEndDate }: 
           </div>
           <div>
             <Label>Tipo</Label>
-            <Select value={typeFilter} onValueChange={(v) => { setTypeFilter(v as "music" | "jingle"); setMediaId(""); }}>
+            <Select value={typeFilter} onValueChange={(v) => { setTypeFilter(v as "music" | "jingle" | "voiceover"); setMediaId(""); }}>
               <SelectTrigger data-testid="select-type"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="music">Musica</SelectItem>
-                <SelectItem value="jingle">Locucao</SelectItem>
+                <SelectItem value="music">🎵 Música</SelectItem>
+                <SelectItem value="jingle">🔔 Jingle</SelectItem>
+                <SelectItem value="voiceover">🎙️ Locução</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -369,7 +370,12 @@ function MediaReport({ clients, startDate, endDate, setStartDate, setEndDate }: 
               <tr key={e.id} data-testid={`row-log-${e.id}`} className="hover:bg-muted/20 transition-colors">
                 <td className="px-5 py-3 font-medium text-foreground">{e.mediaTitle}</td>
                 <td className="px-5 py-3">
-                  <span className={cn("text-xs px-1.5 py-0.5 rounded", e.mediaType === "music" ? "bg-blue-500/10 text-blue-600" : "bg-purple-500/10 text-purple-600")}>{e.mediaType === "music" ? "Musica" : "Locucao"}</span>
+                  <span className={cn(
+                    "text-xs px-1.5 py-0.5 rounded",
+                    e.mediaType === "jingle" ? "bg-amber-500/10 text-amber-600" : e.mediaType === "voiceover" ? "bg-purple-500/10 text-purple-600" : "bg-blue-500/10 text-blue-600"
+                  )}>
+                    {e.mediaType === "jingle" ? "Jingle" : e.mediaType === "voiceover" ? "Locução" : "Música"}
+                  </span>
                 </td>
                 <td className="px-5 py-3 text-muted-foreground">{e.clientEmail}</td>
                 <td className="px-5 py-3 font-mono text-xs text-muted-foreground">{e.deviceUuid.substring(0, 12)}...</td>

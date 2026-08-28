@@ -32,6 +32,14 @@ function SortableItem({ item, index, onRemove }: { item: any; index: number; onR
     zIndex: isDragging ? 50 : undefined,
     position: "relative" as const,
   };
+
+  const badgeConfig =
+    item.media?.type === "jingle"
+      ? { label: "Jingle", bg: "bg-amber-500/10 text-amber-600", icon: <Mic className="w-3 h-3" /> }
+      : item.media?.type === "voiceover"
+      ? { label: "Locução", bg: "bg-purple-500/10 text-purple-600", icon: <Mic className="w-3 h-3" /> }
+      : { label: "Música", bg: "bg-blue-500/10 text-blue-600", icon: <Music className="w-3 h-3" /> };
+
   return (
     <div
       ref={setNodeRef}
@@ -52,8 +60,8 @@ function SortableItem({ item, index, onRemove }: { item: any; index: number; onR
         <GripVertical className="w-4 h-4" />
       </button>
       <span className="text-xs text-muted-foreground/50 font-mono w-5 text-center">{index + 1}</span>
-      <div className={cn("w-6 h-6 rounded flex items-center justify-center flex-none", item.media?.type === "music" ? "bg-blue-500/10 text-blue-600" : "bg-purple-500/10 text-purple-600")}>
-        {item.media?.type === "music" ? <Music className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
+      <div className={cn("w-6 h-6 rounded flex items-center justify-center flex-none", badgeConfig.bg)}>
+        {badgeConfig.icon}
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium text-foreground truncate">{item.media?.title ?? "–"}</p>
@@ -74,7 +82,7 @@ export default function PlaylistDetailPage() {
   const { toast } = useToast();
   const [addOpen, setAddOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [typeFilter, setTypeFilter] = useState<"all" | "music" | "jingle">("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | "music" | "jingle" | "voiceover">("all");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [addProgress, setAddProgress] = useState(0);
   const [jingleConfigOpen, setJingleConfigOpen] = useState(false);
@@ -96,6 +104,8 @@ export default function PlaylistDetailPage() {
   const [jingleForm, setJingleForm] = useState({
     jingleMode: "interval" as "interval" | "ordered" | "time",
     jingleInterval: "3",
+    jingleCount: "1",
+    voiceoverCount: "1",
     jingleIntervalSeconds: "900",
   });
 
@@ -144,7 +154,37 @@ export default function PlaylistDetailPage() {
       },
     },
   });
-  const remove = useRemovePlaylistItem({ mutation: { onSuccess: () => { toast({ title: "Faixa removida" }); inv(); }, onError: () => toast({ title: "Erro", variant: "destructive" }) } });
+  const remove = useRemovePlaylistItem({
+    mutation: {
+      onMutate: async ({ itemId }) => {
+        setLocalItems((prev) => prev.filter((it) => it.id !== itemId));
+      },
+      onSuccess: () => {
+        toast({ title: "Faixa removida" });
+        inv();
+      },
+      onError: () => {
+        toast({ title: "Erro ao remover", variant: "destructive" });
+        inv();
+      },
+    },
+  });
+
+  const handleClearAll = async () => {
+    if (!confirm("Tem certeza que deseja remover todas as faixas desta playlist?")) return;
+    const current = [...localItems];
+    setLocalItems([]);
+    try {
+      for (const it of current) {
+        await remove.mutateAsync({ playlistId, itemId: it.id });
+      }
+      toast({ title: "Todas as faixas foram removidas da playlist" });
+      inv();
+    } catch {
+      inv();
+    }
+  };
+
   const addBatch = useAddPlaylistItemsBatch({
     mutation: {
       onSuccess: (res) => {
@@ -220,13 +260,14 @@ export default function PlaylistDetailPage() {
   }, [allMedia, playlist, existingMediaIds, search, typeFilter]);
 
   const typeCounts = useMemo(() => {
-    if (!allMedia || !playlist) return { music: 0, jingle: 0 };
+    if (!allMedia || !playlist) return { music: 0, jingle: 0, voiceover: 0 };
     const base = allMedia.filter(
       (m) => m.clientId === playlist.clientId && !existingMediaIds.has(m.id),
     );
     return {
       music: base.filter((m) => m.type === "music").length,
       jingle: base.filter((m) => m.type === "jingle").length,
+      voiceover: base.filter((m) => m.type === "voiceover").length,
     };
   }, [allMedia, playlist, existingMediaIds]);
 
@@ -286,6 +327,8 @@ export default function PlaylistDetailPage() {
                 setJingleForm({
                   jingleMode: (currentClient.jingleMode as "interval" | "ordered" | "time") ?? "interval",
                   jingleInterval: String(currentClient.jingleInterval ?? 3),
+                  jingleCount: String((currentClient as any).jingleCount ?? 1),
+                  voiceoverCount: String((currentClient as any).voiceoverCount ?? 1),
                   jingleIntervalSeconds: String(currentClient.jingleIntervalSeconds ?? 900),
                 });
                 setJingleConfigOpen(true);
@@ -294,10 +337,10 @@ export default function PlaylistDetailPage() {
             >
               <Mic className="w-3 h-3" />
               {currentClient.jingleMode === "interval"
-                ? `Locução a cada ${currentClient.jingleInterval ?? 3} música${(currentClient.jingleInterval ?? 3) === 1 ? "" : "s"}`
+                ? `A cada ${currentClient.jingleInterval ?? 3} mús: ${(currentClient as any).jingleCount ?? 1} jingle, ${(currentClient as any).voiceoverCount ?? 1} loc`
                 : currentClient.jingleMode === "time"
                   ? `Interrompe música a cada ${secondsToHms(currentClient.jingleIntervalSeconds ?? 900)}`
-                  : "Locuções na ordem da playlist"}
+                  : "Ordem da playlist"}
               <Settings2 className="w-3 h-3 opacity-60" />
             </button>
           )}
@@ -311,6 +354,17 @@ export default function PlaylistDetailPage() {
             {playlist.playbackMode === "sequential" ? <ToggleLeft className="w-4 h-4" /> : <ToggleRight className="w-4 h-4 text-primary" />}
             {playlist.playbackMode === "sequential" ? "Sequencial" : "Aleatório"}
           </button>
+          {localItems.length > 0 && (
+            <Button
+              variant="outline"
+              data-testid="button-clear-playlist"
+              onClick={handleClearAll}
+              className="text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30"
+              title="Remover todas as faixas desta playlist"
+            >
+              <Trash2 className="w-4 h-4 mr-2" /> Limpar Faixas
+            </Button>
+          )}
           <Button data-testid="button-add-item" onClick={() => { setAddOpen(true); setSelected(new Set()); setSearch(""); setTypeFilter("all"); setAddProgress(0); }}>
             <Plus className="w-4 h-4 mr-2" /> Adicionar
           </Button>
@@ -341,43 +395,70 @@ export default function PlaylistDetailPage() {
       <Dialog open={jingleConfigOpen} onOpenChange={setJingleConfigOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Configurar Locuções</DialogTitle>
+            <DialogTitle>Programação da Playlist</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <p className="text-xs text-muted-foreground bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
-              ℹ️ Esta configuração se aplica a <strong>todas as playlists</strong> do cliente <strong>{currentClient?.name}</strong>.
+              ℹ️ Esta programação se aplica ao cliente <strong>{currentClient?.name}</strong>.
             </p>
             <div>
-              <Label>Modo de intercalação</Label>
+              <Label>Modo de Reprodução</Label>
               <Select
                 value={jingleForm.jingleMode}
                 onValueChange={(v) => setJingleForm({ ...jingleForm, jingleMode: v as "interval" | "ordered" | "time" })}
               >
                 <SelectTrigger data-testid="select-jingle-mode-config"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="interval">Por músicas — a cada N músicas</SelectItem>
-                  <SelectItem value="time">Por tempo — a cada HH:MM:SS</SelectItem>
-                  <SelectItem value="ordered">Ordenado — na ordem da playlist</SelectItem>
+                  <SelectItem value="interval">Por músicas (Intercalado)</SelectItem>
+                  <SelectItem value="time">Por tempo (Interrompe com vinheta/locução)</SelectItem>
+                  <SelectItem value="ordered">Ordenado (conforme a ordem da playlist)</SelectItem>
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground mt-1.5">
-                Os modos são exclusivos: ao escolher um, os outros são desativados automaticamente.
-              </p>
             </div>
             {jingleForm.jingleMode === "interval" && (
-              <div>
-                <Label>A cada quantas músicas tocar uma locução?</Label>
-                <Input
-                  data-testid="input-jingle-interval-config"
-                  type="number"
-                  min={1}
-                  max={50}
-                  value={jingleForm.jingleInterval}
-                  onChange={(e) => setJingleForm({ ...jingleForm, jingleInterval: e.target.value })}
-                />
-                <p className="text-xs text-muted-foreground mt-1.5">
-                  Exemplo: <strong>3</strong> = toca 3 músicas, depois 1 locução, repete.
-                </p>
+              <div className="p-3 bg-muted/40 border border-border rounded-lg space-y-3">
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <Label className="text-xs font-semibold">A cada N músicas</Label>
+                    <Input
+                      data-testid="input-jingle-interval-config"
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={jingleForm.jingleInterval}
+                      onChange={(e) => setJingleForm({ ...jingleForm, jingleInterval: e.target.value })}
+                      className="mt-1 h-8 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs font-semibold text-amber-600">Tocar Jingles</Label>
+                    <Input
+                      data-testid="input-jingle-count-config"
+                      type="number"
+                      min={0}
+                      max={10}
+                      value={jingleForm.jingleCount}
+                      onChange={(e) => setJingleForm({ ...jingleForm, jingleCount: e.target.value })}
+                      className="mt-1 h-8 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs font-semibold text-purple-600">Tocar Locuções</Label>
+                    <Input
+                      data-testid="input-voiceover-count-config"
+                      type="number"
+                      min={0}
+                      max={10}
+                      value={jingleForm.voiceoverCount}
+                      onChange={(e) => setJingleForm({ ...jingleForm, voiceoverCount: e.target.value })}
+                      className="mt-1 h-8 text-xs"
+                    />
+                  </div>
+                </div>
+                <div className="text-[11px] text-muted-foreground bg-background/80 p-2 rounded border border-border/50">
+                  💡 <strong>Regra:</strong> A cada <strong>{jingleForm.jingleInterval || 1} música(s)</strong>, tocará{" "}
+                  <strong>{jingleForm.jingleCount || 0} jingle(s)</strong> e <strong>{jingleForm.voiceoverCount || 0} locução(ões)</strong> (caso existam).
+                </div>
               </div>
             )}
             {jingleForm.jingleMode === "time" && (
@@ -393,7 +474,6 @@ export default function PlaylistDetailPage() {
                 />
                 <p className="text-xs text-muted-foreground mt-1.5">
                   Ex: <strong>00:00:50</strong> = 50 segundos · <strong>00:15:00</strong> = 15 minutos.
-                  Quando o tempo bate, a música é interrompida, toca 1 locução e o player avança pra próxima faixa.
                 </p>
               </div>
             )}
@@ -406,6 +486,8 @@ export default function PlaylistDetailPage() {
               onClick={() => {
                 if (!currentClient) return;
                 const interval = Math.max(1, parseInt(jingleForm.jingleInterval) || 3);
+                const jCount = Math.max(0, parseInt(jingleForm.jingleCount) || 1);
+                const vCount = Math.max(0, parseInt(jingleForm.voiceoverCount) || 1);
                 const intervalSeconds = Math.max(1, parseInt(jingleForm.jingleIntervalSeconds) || 900);
                 updateClient.mutate({
                   clientId: currentClient.id,
@@ -416,6 +498,8 @@ export default function PlaylistDetailPage() {
                     playbackMode: currentClient.playbackMode as "sequential" | "shuffle",
                     jingleMode: jingleForm.jingleMode,
                     jingleInterval: interval,
+                    jingleCount: jCount,
+                    voiceoverCount: vCount,
                     jingleIntervalSeconds: intervalSeconds,
                   },
                 });
@@ -446,9 +530,10 @@ export default function PlaylistDetailPage() {
 
           <div className="flex items-center gap-1.5 -mt-1">
             {([
-              { key: "all", label: "Todos", count: typeCounts.music + typeCounts.jingle, icon: null, color: "" },
+              { key: "all", label: "Todos", count: typeCounts.music + typeCounts.jingle + typeCounts.voiceover, icon: null, color: "" },
               { key: "music", label: "Música", count: typeCounts.music, icon: Music, color: "text-blue-600" },
-              { key: "jingle", label: "Locução", count: typeCounts.jingle, icon: Mic, color: "text-purple-600" },
+              { key: "jingle", label: "Jingle", count: typeCounts.jingle, icon: Mic, color: "text-amber-600" },
+              { key: "voiceover", label: "Locução", count: typeCounts.voiceover, icon: Mic, color: "text-purple-600" },
             ] as const).map((opt) => {
               const Icon = opt.icon;
               const active = typeFilter === opt.key;
@@ -498,6 +583,13 @@ export default function PlaylistDetailPage() {
               <div className="space-y-1">
                 {availableMedia.map((m) => {
                   const isChecked = selected.has(m.id);
+                  const rowBadge =
+                    m.type === "jingle"
+                      ? { label: "Jingle", color: "text-amber-600", bg: "bg-amber-500/10 text-amber-600", icon: <Mic className="w-3 h-3" /> }
+                      : m.type === "voiceover"
+                      ? { label: "Locução", color: "text-purple-600", bg: "bg-purple-500/10 text-purple-600", icon: <Mic className="w-3 h-3" /> }
+                      : { label: "Música", color: "text-blue-600", bg: "bg-blue-500/10 text-blue-600", icon: <Music className="w-3 h-3" /> };
+
                   return (
                     <label
                       key={m.id}
@@ -516,15 +608,15 @@ export default function PlaylistDetailPage() {
                         onChange={() => toggleOne(m.id)}
                         className="w-4 h-4 rounded border-border accent-primary cursor-pointer"
                       />
-                      <div className={cn("w-6 h-6 rounded flex items-center justify-center flex-none", m.type === "music" ? "bg-blue-500/10 text-blue-600" : "bg-purple-500/10 text-purple-600")}>
-                        {m.type === "music" ? <Music className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
+                      <div className={cn("w-6 h-6 rounded flex items-center justify-center flex-none", rowBadge.bg)}>
+                        {rowBadge.icon}
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-foreground truncate">{m.title}</p>
                         {m.artist && <p className="text-xs text-muted-foreground truncate">{m.artist}</p>}
                       </div>
-                      <span className={cn("text-[10px] uppercase tracking-wide font-medium", m.type === "music" ? "text-blue-600" : "text-purple-600")}>
-                        {m.type === "music" ? "Música" : "Locução"}
+                      <span className={cn("text-[10px] uppercase tracking-wide font-medium", rowBadge.color)}>
+                        {rowBadge.label}
                       </span>
                     </label>
                   );

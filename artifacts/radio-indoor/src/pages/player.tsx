@@ -11,6 +11,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import logoSrc from "@assets/LOGO_1777766957414.png";
 import { usePwaInstall } from "@/hooks/usePwaInstall";
+import { APP_VERSION } from "@/components/Layout";
 import "@/styles/dj-console.css";
 
 function getOrCreateUUID(): string {
@@ -205,10 +206,10 @@ export default function PlayerPage() {
 
   const multiplePlaylistsAvailable = (availablePlaylists?.length ?? 0) > 1;
 
-  // Build the actual play schedule by interleaving locuções between músicas.
+  // Build the actual play schedule by interleaving jingles and locuções between músicas.
   // - jingleMode "ordered": play items as-is in their saved order
-  // - jingleMode "interval": every N músicas insert one locução (cycling)
-  // - jingleMode "time": schedule is music-only; jingles are interrupt-driven
+  // - jingleMode "interval": every N músicas insert X jingles and Y locuções (cycling)
+  // - jingleMode "time": schedule is music-only; jingles/voiceovers are interrupt-driven
   //   by a timer (jingleIntervalSeconds) and fire as overlays via currentJingle.
   // Also applies shuffle when client is set to "shuffle" mode.
   type QueueItem = NonNullable<typeof queue>["items"][number];
@@ -217,6 +218,9 @@ export default function PlayerPage() {
     if (items.length === 0) return [];
     const mode = queue?.jingleMode ?? "ordered";
     const interval = Math.max(1, queue?.jingleInterval ?? 3);
+    const jingleCount = Math.max(0, (queue as any)?.jingleCount ?? 1);
+    const voiceoverCount = Math.max(0, (queue as any)?.voiceoverCount ?? 1);
+
     if (mode === "ordered") {
       if (queue?.playbackMode === "shuffle") {
         return [...items].sort(() => Math.random() - 0.5);
@@ -224,38 +228,65 @@ export default function PlayerPage() {
       return items;
     }
     if (mode === "time") {
-      // Music-only schedule; jingles fire via timer interrupt.
+      // Music-only schedule; jingles/voiceovers fire via timer interrupt.
       let musics = items.filter((i) => i.type === "music");
       if (queue?.playbackMode === "shuffle") {
         musics = [...musics].sort(() => Math.random() - 0.5);
       }
-      // Fallback: if cliente só tem locuções cadastradas, toca elas mesmo.
-      if (musics.length === 0) return items.filter((i) => i.type === "jingle");
+      // Fallback: if cliente só tem vinhetas/locuções cadastradas, toca elas mesmo.
+      if (musics.length === 0) return items.filter((i) => i.type === "jingle" || i.type === "voiceover");
       return musics;
     }
-    // interval mode: separate musics from jingles, intercalate
+
+    // interval mode: separate musics, jingles, and voiceovers, then intercalate
     let musics = items.filter((i) => i.type === "music");
     const jingles = items.filter((i) => i.type === "jingle");
+    const voiceovers = items.filter((i) => i.type === "voiceover");
+
     if (queue?.playbackMode === "shuffle") {
       musics = [...musics].sort(() => Math.random() - 0.5);
     }
-    if (jingles.length === 0) return musics;
-    if (musics.length === 0) return jingles;
+
+    // If no musics exist, output all available jingles and voiceovers
+    if (musics.length === 0) {
+      return [...jingles, ...voiceovers];
+    }
+
+    // If neither jingles nor voiceovers exist, output only musics
+    if (jingles.length === 0 && voiceovers.length === 0) {
+      return musics;
+    }
+
     const out: typeof items = [];
     let jIdx = 0;
+    let vIdx = 0;
+
     musics.forEach((m, i) => {
       out.push(m);
       if ((i + 1) % interval === 0) {
-        out.push(jingles[jIdx % jingles.length]!);
-        jIdx++;
+        // Append jingles if available and count > 0
+        if (jingles.length > 0 && jingleCount > 0) {
+          for (let c = 0; c < jingleCount; c++) {
+            out.push(jingles[jIdx % jingles.length]!);
+            jIdx++;
+          }
+        }
+        // Append voiceovers if available and count > 0
+        if (voiceovers.length > 0 && voiceoverCount > 0) {
+          for (let c = 0; c < voiceoverCount; c++) {
+            out.push(voiceovers[vIdx % voiceovers.length]!);
+            vIdx++;
+          }
+        }
       }
     });
-    return out;
-  }, [queue?.items, queue?.jingleMode, queue?.jingleInterval, queue?.playbackMode]);
 
-  // Pool of jingles available for time-mode interruption
+    return out;
+  }, [queue?.items, queue?.jingleMode, queue?.jingleInterval, (queue as any)?.jingleCount, (queue as any)?.voiceoverCount, queue?.playbackMode]);
+
+  // Pool of jingles/voiceovers available for time-mode interruption
   const jinglesPool = useMemo<QueueItem[]>(() => {
-    return (queue?.items ?? []).filter((i) => i.type === "jingle");
+    return (queue?.items ?? []).filter((i) => i.type === "jingle" || i.type === "voiceover");
   }, [queue?.items]);
 
   // Heartbeat every 3 minutes
@@ -802,6 +833,9 @@ export default function PlayerPage() {
           <span className="hidden sm:flex text-[var(--dj-cyan)] font-bold tracking-widest text-sm uppercase items-center gap-2">
             <SlidersHorizontal className="w-4 h-4" /> Operator Console
           </span>
+          <span className="px-2 py-0.5 rounded-full bg-[var(--dj-cyan)]/20 border border-[var(--dj-cyan)] text-[var(--dj-cyan)] font-mono text-[11px] font-bold">
+            {APP_VERSION}
+          </span>
         </div>
 
         <div className="flex items-center gap-4">
@@ -1036,10 +1070,10 @@ export default function PlayerPage() {
                 {currentItem ? (
                   <>
                     <div className={`text-[9px] uppercase font-bold tracking-wider flex items-center gap-1 mb-0.5 ${
-                      currentItem.type === "music" ? "text-[var(--dj-cyan)]" : "text-[var(--dj-magenta)]"
+                      currentItem.type === "jingle" ? "text-amber-400" : currentItem.type === "voiceover" ? "text-[var(--dj-magenta)]" : "text-[var(--dj-cyan)]"
                     }`}>
                       {currentItem.type === "music" ? <Music className="w-2.5 h-2.5" /> : <Mic2 className="w-2.5 h-2.5" />}
-                      {currentItem.type === "music" ? "Música" : "Locução"}
+                      {currentItem.type === "jingle" ? "Jingle" : currentItem.type === "voiceover" ? "Locução" : "Música"}
                     </div>
                     <p className="text-sm font-semibold text-[var(--dj-text)] truncate leading-tight">{currentItem.title}</p>
                     <p className="text-[11px] text-[var(--dj-muted)] truncate">{currentItem.artist ?? "—"}</p>
@@ -1076,10 +1110,14 @@ export default function PlayerPage() {
               {currentItem ? (
                 <div className="w-full">
                   <div className={`text-[10px] uppercase font-bold px-3 py-1 rounded inline-flex items-center gap-1.5 mb-3 border ${
-                    currentItem.type === "music" ? "bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] border-[var(--dj-cyan)]" : "bg-[var(--dj-magenta-glow)] text-[var(--dj-magenta)] border-[var(--dj-magenta)]"
+                    currentItem.type === "jingle"
+                      ? "bg-amber-500/10 text-amber-400 border-amber-500/30"
+                      : currentItem.type === "voiceover"
+                      ? "bg-[var(--dj-magenta-glow)] text-[var(--dj-magenta)] border-[var(--dj-magenta)]"
+                      : "bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] border-[var(--dj-cyan)]"
                   }`}>
                     {currentItem.type === "music" ? <Music className="w-3 h-3" /> : <Mic2 className="w-3 h-3" />}
-                    {currentItem.type === "music" ? "Música" : "Locução"}
+                    {currentItem.type === "jingle" ? "Jingle" : currentItem.type === "voiceover" ? "Locução" : "Música"}
                   </div>
                   <h1 className="text-2xl font-bold text-[var(--dj-text)] truncate w-full mb-1 tracking-tight">{currentItem.title}</h1>
                   <p className="text-[var(--dj-muted)] text-base truncate w-full">{currentItem.artist ?? "Desconhecido"}</p>
@@ -1096,7 +1134,12 @@ export default function PlayerPage() {
                 const ratio = duration > 0 ? currentTime / duration : 0;
                 const isActive = i / 40 < ratio;
                 const height = 20 + Math.sin(i * 0.5) * 15 + (i * 7 % 17);
-                const activeColor = currentItem?.type === "jingle" ? "bg-[var(--dj-magenta)] shadow-[0_0_8px_var(--dj-magenta)]" : "bg-[var(--dj-cyan)] shadow-[0_0_8px_var(--dj-cyan)]";
+                const activeColor =
+                  currentItem?.type === "jingle"
+                    ? "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]"
+                    : currentItem?.type === "voiceover"
+                    ? "bg-[var(--dj-magenta)] shadow-[0_0_8px_var(--dj-magenta)]"
+                    : "bg-[var(--dj-cyan)] shadow-[0_0_8px_var(--dj-cyan)]";
                 return <div key={i} className={`flex-1 rounded-t-sm transition-colors duration-200 ${isActive ? activeColor : "bg-[var(--dj-accent)]"} ${isPlaying && isActive ? `dj-vu-bar dj-vu-${(i % 12) + 1}` : ""}`} style={{ height: `${height}%` }} />;
               })}
             </div>
@@ -1149,7 +1192,7 @@ export default function PlayerPage() {
             {tracksUntilJingle !== null && (
               <div className="flex items-center gap-1.5 bg-[var(--dj-magenta-glow)] border border-[var(--dj-magenta)] text-[var(--dj-magenta)] px-2 py-0.5 rounded text-[9px] uppercase font-bold tracking-wider">
                 <AlertCircle className="w-2.5 h-2.5" />
-                T-{tracksUntilJingle} locução
+                T-{tracksUntilJingle} próxima vinheta/locução
               </div>
             )}
           </div>
@@ -1162,6 +1205,15 @@ export default function PlayerPage() {
                 {upcoming.map(({ item, absoluteIdx }, displayPos) => {
                   const isCurrent = displayPos === 0;
                   const isJingle = item.type === "jingle";
+                  const isVoiceover = item.type === "voiceover";
+                  const itemColorClass = isJingle ? "text-amber-400" : isVoiceover ? "text-[var(--dj-magenta)]" : "text-[var(--dj-cyan)]";
+                  const itemBgClass = isJingle
+                    ? "bg-amber-500/10 border-amber-500/30"
+                    : isVoiceover
+                    ? "bg-[var(--dj-magenta-glow)] border-[var(--dj-magenta)]"
+                    : "bg-[var(--dj-cyan-glow)] border-[var(--dj-cyan)]";
+                  const itemBarClass = isJingle ? "bg-amber-400" : isVoiceover ? "bg-[var(--dj-magenta)]" : "bg-[var(--dj-cyan)]";
+
                   return (
                     <div
                       key={`${absoluteIdx}-${item.id}`}
@@ -1179,25 +1231,27 @@ export default function PlayerPage() {
                       }}
                       className={`flex items-center gap-2 px-2 py-1.5 lg:p-3 rounded cursor-pointer transition-colors group border focus:outline-none focus:ring-1 focus:ring-[var(--dj-cyan)] ${
                         isCurrent
-                          ? (isJingle ? "bg-[var(--dj-magenta-glow)] border-[var(--dj-magenta)]" : "bg-[var(--dj-cyan-glow)] border-[var(--dj-cyan)]")
+                          ? itemBgClass
                           : "bg-transparent border-transparent hover:bg-[var(--dj-panel-hover)]"
                       }`}
                     >
                       <div className="w-5 text-center text-[10px] dj-mono text-[var(--dj-muted)] flex-none">
                         {isCurrent
-                          ? (isPlaying ? <Activity className={`w-3 h-3 mx-auto ${isJingle ? "text-[var(--dj-magenta)]" : "text-[var(--dj-cyan)]"}`} /> : "⏸")
+                          ? (isPlaying ? <Activity className={`w-3 h-3 mx-auto ${itemColorClass}`} /> : "⏸")
                           : displayPos}
                       </div>
                       <div className="w-1 h-6 rounded-full flex-none bg-[var(--dj-accent)] overflow-hidden">
-                        <div className={`w-full h-full ${isJingle ? "bg-[var(--dj-magenta)]" : "bg-[var(--dj-cyan)]"} ${isCurrent ? "opacity-100" : "opacity-30 group-hover:opacity-60"}`} />
+                        <div className={`w-full h-full ${itemBarClass} ${isCurrent ? "opacity-100" : "opacity-30 group-hover:opacity-60"}`} />
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className={`text-xs font-semibold truncate ${
-                          isCurrent ? (isJingle ? "text-[var(--dj-magenta)]" : "text-[var(--dj-cyan)]") : "text-[var(--dj-text)]"
+                          isCurrent ? itemColorClass : "text-[var(--dj-text)]"
                         }`}>
                           {item.title}
                         </p>
-                        <p className="text-[10px] text-[var(--dj-muted)] truncate">{item.artist ?? "—"}</p>
+                        <p className="text-[10px] text-[var(--dj-muted)] truncate">
+                          {item.type === "jingle" ? "🔔 Jingle" : item.type === "voiceover" ? "🎙️ Locução" : item.artist ?? "—"}
+                        </p>
                       </div>
                       <div className="text-[10px] dj-mono text-[var(--dj-muted)] flex-none">
                         {isCurrent && duration > 0

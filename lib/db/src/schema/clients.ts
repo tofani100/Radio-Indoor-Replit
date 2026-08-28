@@ -16,6 +16,8 @@ export const clientsTable = pgTable("clients", {
   // "ordered" | "interval" (a cada N musicas) | "time" (a cada N minutos interrompe musica)
   jingleMode: text("jingle_mode").notNull().default("interval"),
   jingleInterval: integer("jingle_interval").notNull().default(3),
+  jingleCount: integer("jingle_count").notNull().default(1),
+  voiceoverCount: integer("voiceover_count").notNull().default(1),
   jingleIntervalSeconds: integer("jingle_interval_seconds").notNull().default(900),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),

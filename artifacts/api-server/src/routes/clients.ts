@@ -18,6 +18,8 @@ router.get("/clients", requireAdmin, async (req, res) => {
         playbackMode: clientsTable.playbackMode,
         jingleMode: clientsTable.jingleMode,
         jingleInterval: clientsTable.jingleInterval,
+        jingleCount: clientsTable.jingleCount,
+        voiceoverCount: clientsTable.voiceoverCount,
         jingleIntervalSeconds: clientsTable.jingleIntervalSeconds,
         active: clientsTable.active,
         createdAt: clientsTable.createdAt,
@@ -56,16 +58,22 @@ function sanitizeEmails(input: unknown): string[] {
 
 router.post("/clients", requireAdmin, async (req, res) => {
   try {
-    const { name, email, masterEmail, password, playbackMode, jingleMode, jingleInterval, jingleIntervalSeconds, authorizedEmails } = req.body;
-    if (!name || !email || !masterEmail || !password) {
-      res.status(400).json({ error: "Bad Request", message: "Nome, email, email master e senha são obrigatórios" });
+    const { name, email, masterEmail, password, playbackMode, jingleMode, jingleInterval, jingleCount, voiceoverCount, jingleIntervalSeconds, authorizedEmails } = req.body;
+    if (!name || !name.trim()) {
+      res.status(400).json({ error: "Bad Request", message: "Nome do cliente é obrigatório" });
       return;
     }
 
-    const cleanEmail = email.trim().toLowerCase();
-    const cleanMasterEmail = masterEmail.trim().toLowerCase();
+    const cleanEmails = sanitizeEmails(authorizedEmails);
+    const slug = name.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    let cleanEmail = (email && email.trim()) 
+      ? email.trim().toLowerCase() 
+      : cleanEmails[0] || `${slug || "cliente"}_${Date.now()}@cliente.radioindoor.com`;
+    const cleanMasterEmail = (masterEmail && masterEmail.trim()) 
+      ? masterEmail.trim().toLowerCase() 
+      : cleanEmails[0] || cleanEmail;
 
-    // Check if email is already in use
+    // Ensure unique email column value in DB
     const [existing] = await db
       .select({ id: clientsTable.id })
       .from(clientsTable)
@@ -73,22 +81,27 @@ router.post("/clients", requireAdmin, async (req, res) => {
       .limit(1);
 
     if (existing) {
-      res.status(400).json({ error: "Bad Request", message: "Este email de login já está cadastrado para outro cliente" });
-      return;
+      if (email && email.trim()) {
+        res.status(400).json({ error: "Bad Request", message: "Este email já está cadastrado para outro cliente" });
+        return;
+      }
+      cleanEmail = `${slug || "cliente"}_${Date.now()}@cliente.radioindoor.com`;
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(password || "radioindoor2025", 10);
     const [client] = await db
       .insert(clientsTable)
       .values({
         name: name.trim(),
         email: cleanEmail,
         masterEmail: cleanMasterEmail,
-        authorizedEmails: sanitizeEmails(authorizedEmails),
+        authorizedEmails: cleanEmails,
         passwordHash,
         playbackMode: playbackMode ?? "sequential",
         jingleMode: jingleMode ?? "interval",
         jingleInterval: typeof jingleInterval === "number" && !isNaN(jingleInterval) ? jingleInterval : 3,
+        jingleCount: typeof jingleCount === "number" && !isNaN(jingleCount) ? jingleCount : 1,
+        voiceoverCount: typeof voiceoverCount === "number" && !isNaN(voiceoverCount) ? voiceoverCount : 1,
         jingleIntervalSeconds: typeof jingleIntervalSeconds === "number" && !isNaN(jingleIntervalSeconds) ? jingleIntervalSeconds : 900,
       })
       .returning();
@@ -144,15 +157,17 @@ router.put("/clients/:clientId", requireAdmin, async (req, res) => {
       res.status(400).json({ error: "Bad Request", message: "ID de cliente inválido" });
       return;
     }
-    const { name, email, masterEmail, playbackMode, jingleMode, jingleInterval, jingleIntervalSeconds, active, authorizedEmails } = req.body;
+    const { name, email, masterEmail, playbackMode, jingleMode, jingleInterval, jingleCount, voiceoverCount, jingleIntervalSeconds, active, authorizedEmails } = req.body;
     const updates: Record<string, unknown> = {};
     if (name !== undefined) updates.name = name.trim();
-    if (email !== undefined) updates.email = email.trim().toLowerCase();
-    if (masterEmail !== undefined) updates.masterEmail = masterEmail.trim().toLowerCase();
+    if (email !== undefined && email.trim()) updates.email = email.trim().toLowerCase();
+    if (masterEmail !== undefined && masterEmail.trim()) updates.masterEmail = masterEmail.trim().toLowerCase();
     if (authorizedEmails !== undefined) updates.authorizedEmails = sanitizeEmails(authorizedEmails);
     if (playbackMode !== undefined) updates.playbackMode = playbackMode;
     if (jingleMode !== undefined) updates.jingleMode = jingleMode;
     if (jingleInterval !== undefined) updates.jingleInterval = jingleInterval;
+    if (jingleCount !== undefined) updates.jingleCount = jingleCount;
+    if (voiceoverCount !== undefined) updates.voiceoverCount = voiceoverCount;
     if (jingleIntervalSeconds !== undefined) updates.jingleIntervalSeconds = jingleIntervalSeconds;
     if (active !== undefined) updates.active = active;
 

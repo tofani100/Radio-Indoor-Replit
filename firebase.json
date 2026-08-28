@@ -6,6 +6,7 @@
     "rules": "storage.rules"
   },
   "hosting": {
+    "target": "app",
     "public": "artifacts/radio-indoor/dist/public",
     "ignore": [
       "firebase.json",
