@@ -22,7 +22,7 @@ import {
 } from "firebase/storage";
 
 const DB_NAME = "radio_indoor_db";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export interface DBAdmin {
   id: number;
@@ -114,15 +114,17 @@ export function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
 
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = (event) => {
       const db = req.result;
+      const tx = req.transaction;
+
       if (!db.objectStoreNames.contains("admins")) {
         const store = db.createObjectStore("admins", { keyPath: "id", autoIncrement: true });
-        store.createIndex("email", "email", { unique: true });
+        store.createIndex("email", "email", { unique: false });
       }
       if (!db.objectStoreNames.contains("clients")) {
         const store = db.createObjectStore("clients", { keyPath: "id", autoIncrement: true });
-        store.createIndex("email", "email", { unique: true });
+        store.createIndex("email", "email", { unique: false });
       }
       if (!db.objectStoreNames.contains("playlists")) {
         const store = db.createObjectStore("playlists", { keyPath: "id", autoIncrement: true });
@@ -139,7 +141,16 @@ export function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains("devices")) {
         const store = db.createObjectStore("devices", { keyPath: "id", autoIncrement: true });
         store.createIndex("clientId", "clientId", { unique: false });
-        store.createIndex("pairingCode", "pairingCode", { unique: true });
+        store.createIndex("pairingCode", "pairingCode", { unique: false });
+      } else if (tx) {
+        // Upgrade existing devices store to remove unique index on pairingCode
+        try {
+          const store = tx.objectStore("devices");
+          if (store.indexNames.contains("pairingCode")) {
+            store.deleteIndex("pairingCode");
+            store.createIndex("pairingCode", "pairingCode", { unique: false });
+          }
+        } catch {}
       }
       if (!db.objectStoreNames.contains("playbackLogs")) {
         const store = db.createObjectStore("playbackLogs", { keyPath: "id", autoIncrement: true });
@@ -159,44 +170,64 @@ export function openDB(): Promise<IDBDatabase> {
 // ── Local IndexedDB operations (Cache layer) ──
 function getLocalAll<T>(storeName: string): Promise<T[]> {
   return openDB().then((db) => {
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, "readonly");
-      const store = tx.objectStore(storeName);
-      const req = store.getAll();
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => reject(req.error);
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(storeName, "readonly");
+        const store = tx.objectStore(storeName);
+        const req = store.getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => resolve([]);
+      } catch {
+        resolve([]);
+      }
     });
-  });
+  }).catch(() => []);
 }
 
 function putLocal<T>(storeName: string, item: T): Promise<void> {
   return openDB().then((db) => {
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, "readwrite");
-      const store = tx.objectStore(storeName);
-      if (storeName === "media" && !(item as any).blob && (item as any).id) {
-        const getReq = store.get((item as any).id);
-        getReq.onsuccess = () => {
-          const existing = getReq.result;
-          if (existing && existing.blob) {
-            (item as any).blob = existing.blob;
-          }
-          const putReq = store.put(item);
-          putReq.onsuccess = () => resolve();
-          putReq.onerror = () => reject(putReq.error);
-        };
-        getReq.onerror = () => {
-          const putReq = store.put(item);
-          putReq.onsuccess = () => resolve();
-          putReq.onerror = () => reject(putReq.error);
-        };
-      } else {
-        const req = store.put(item);
-        req.onsuccess = () => resolve();
-        req.onerror = () => reject(req.error);
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(storeName, "readwrite");
+        const store = tx.objectStore(storeName);
+        if (storeName === "media" && !(item as any).blob && (item as any).id) {
+          const getReq = store.get((item as any).id);
+          getReq.onsuccess = () => {
+            const existing = getReq.result;
+            if (existing && existing.blob) {
+              (item as any).blob = existing.blob;
+            }
+            try {
+              const putReq = store.put(item);
+              putReq.onsuccess = () => resolve();
+              putReq.onerror = () => resolve();
+            } catch {
+              resolve();
+            }
+          };
+          getReq.onerror = () => {
+            try {
+              const putReq = store.put(item);
+              putReq.onsuccess = () => resolve();
+              putReq.onerror = () => resolve();
+            } catch {
+              resolve();
+            }
+          };
+        } else {
+          const req = store.put(item);
+          req.onsuccess = () => resolve();
+          req.onerror = (err) => {
+            console.warn(`[putLocal] Error storing in ${storeName}:`, err);
+            resolve(); // Do not throw and break the caller!
+          };
+        }
+      } catch (err) {
+        console.warn(`[putLocal] Exception in ${storeName}:`, err);
+        resolve();
       }
     });
-  });
+  }).catch(() => {});
 }
 
 function deleteLocal(storeName: string, id: number): Promise<void> {
@@ -740,30 +771,34 @@ export async function handleStandaloneRequest(
     if (authorizedClient) {
       console.warn("[REGISTER] ✅ AUTORIZADO pelo cliente:", authorizedClient.name);
 
-      const allDevs = await getAll<DBDevice>("devices");
-      const nowIso = new Date().toISOString();
-      let existingDev = allDevs.find((d) => (uuid && d.uuid === uuid) || (d.email && d.email.toLowerCase() === email));
       let devId = 1;
-      if (existingDev) {
-        devId = existingDev.id;
-        existingDev.lastSeen = nowIso;
-        existingDev.clientId = authorizedClient.id;
-        existingDev.email = email;
-        if (uuid) existingDev.uuid = uuid;
-        existingDev.status = "active";
-        await update("devices", existingDev);
-      } else {
-        const newDev: Omit<DBDevice, "id"> = {
-          clientId: authorizedClient.id,
-          name: email.split("@")[0] || "Device",
-          pairingCode: "",
-          uuid: uuid || `dev-${Date.now()}`,
-          email: email,
-          status: "active",
-          lastSeen: nowIso,
-          createdAt: nowIso,
-        };
-        devId = await insert("devices", newDev);
+      try {
+        const allDevs = await getAll<DBDevice>("devices");
+        const nowIso = new Date().toISOString();
+        let existingDev = allDevs.find((d) => (uuid && d.uuid === uuid) || (d.email && d.email.toLowerCase() === email));
+        if (existingDev) {
+          devId = existingDev.id;
+          existingDev.lastSeen = nowIso;
+          existingDev.clientId = authorizedClient.id;
+          existingDev.email = email;
+          if (uuid) existingDev.uuid = uuid;
+          existingDev.status = "active";
+          await update("devices", existingDev);
+        } else {
+          const newDev: Omit<DBDevice, "id"> = {
+            clientId: authorizedClient.id,
+            name: email.split("@")[0] || "Device",
+            pairingCode: `pair-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            uuid: uuid || `dev-${Date.now()}`,
+            email: email,
+            status: "active",
+            lastSeen: nowIso,
+            createdAt: nowIso,
+          };
+          devId = await insert("devices", newDev);
+        }
+      } catch (devErr) {
+        console.warn("[REGISTER] Device record update error (non-fatal):", devErr);
       }
 
       return {
