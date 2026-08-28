@@ -558,6 +558,22 @@ export function getAudioDurationFromFile(file: File): Promise<number> {
   });
 }
 
+export function extractClientAuthorizedEmails(client: DBClient): string[] {
+  const set = new Set<string>();
+  if (Array.isArray(client.authorizedEmails)) {
+    client.authorizedEmails.forEach((e) => {
+      if (typeof e === "string" && e.trim()) set.add(e.trim().toLowerCase());
+    });
+  }
+  if (client.masterEmail && typeof client.masterEmail === "string") {
+    set.add(client.masterEmail.trim().toLowerCase());
+  }
+  if (client.email && typeof client.email === "string") {
+    set.add(client.email.trim().toLowerCase());
+  }
+  return Array.from(set);
+}
+
 /**
  * Handle API requests locally inside the browser connected with Firestore & Firebase Storage.
  */
@@ -663,7 +679,7 @@ export async function handleStandaloneRequest(
     }
 
     const clients = await getAll<DBClient>("clients");
-    const activeClients = clients.filter((c) => c.active);
+    const activeClients = clients.filter((c) => c.active !== false);
 
     const authorizedClient = activeClients.find((c) => {
       return extractClientAuthorizedEmails(c).includes(email);
@@ -736,7 +752,7 @@ export async function handleStandaloneRequest(
     }
 
     const clients = await getAll<DBClient>("clients");
-    const activeClients = clients.filter((c) => c.active);
+    const activeClients = clients.filter((c) => c.active !== false);
 
     const cleanParam = (emailParam || "").trim().toLowerCase();
     const matchingClients = activeClients.filter((c) => {
@@ -874,7 +890,7 @@ export async function handleStandaloneRequest(
   if (path === "/api/playback/playlists" || path.startsWith("/api/playback/playlists")) {
     const emailParam = (query.get("email") || "").trim().toLowerCase();
     const clients = await getAll<DBClient>("clients");
-    const activeClients = clients.filter((c) => c.active);
+    const activeClients = clients.filter((c) => c.active !== false);
 
     const cleanParam = (emailParam || "").trim().toLowerCase();
     const matchingClients = activeClients.filter((c) => {
