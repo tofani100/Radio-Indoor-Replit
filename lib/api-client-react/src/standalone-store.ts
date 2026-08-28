@@ -1056,12 +1056,22 @@ export async function handleStandaloneRequest(
     return { status: 200, data: { status: "active", success: true } };
   }
 
-  // ── Dashboard Summary ──
-  if (path === "/api/dashboard/summary") {
+  // ── Dashboard Routes ──
+  if (path === "/api/dashboard/summary" || path === "/api/dashboard") {
     const clients = await getAll<DBClient>("clients");
     const playlists = await getAll<DBPlaylist>("playlists");
     const media = await getAll<DBMedia>("media");
     const devices = await getAll<DBDevice>("devices");
+    const playbackLogs = await getAll<DBPlaybackLog>("playbackLogs");
+
+    const activeDevices = devices.filter((d) => d.status === "active").length;
+    const pendingDevices = devices.filter((d) => d.status === "pending").length;
+    const now = Date.now();
+    const onlineDevices = devices.filter((d) => d.lastSeen && (now - new Date(d.lastSeen).getTime() < 5 * 60 * 1000)).length;
+    const offlineDevices = devices.length - onlineDevices;
+
+    const todayStr = new Date().toISOString().split("T")[0];
+    const totalPlaysToday = playbackLogs.filter((l) => l.playedAt && l.playedAt.startsWith(todayStr)).length;
 
     return {
       status: 200,
@@ -1070,10 +1080,77 @@ export async function handleStandaloneRequest(
         totalPlaylists: playlists.length,
         totalMedia: media.length,
         totalDevices: devices.length,
-        activeDevices: devices.filter((d) => d.status === "active").length,
+        activeDevices,
+        pendingDevices,
+        onlineDevices,
+        offlineDevices,
+        totalPlaysToday,
         recentActivity: [],
       },
     };
+  }
+
+  if (path === "/api/devices/status-overview" || path === "/api/dashboard/devices") {
+    const devices = await getAll<DBDevice>("devices");
+    const clients = await getAll<DBClient>("clients");
+    const now = Date.now();
+    const overview = devices.map((d) => {
+      const client = clients.find((c) => c.id === d.clientId);
+      const isOnline = d.lastSeen ? (now - new Date(d.lastSeen).getTime() < 5 * 60 * 1000) : false;
+      return {
+        id: d.id,
+        name: d.name,
+        email: d.email || `Dispositivo #${d.id}`,
+        clientName: client?.name || "Sem cliente",
+        status: d.status || "active",
+        isOnline,
+        lastSeen: d.lastSeen,
+      };
+    });
+    return { status: 200, data: overview };
+  }
+
+  if (path === "/api/media/top" || path === "/api/dashboard/top-media") {
+    const allMedia = await getAll<DBMedia>("media");
+    const playbackLogs = await getAll<DBPlaybackLog>("playbackLogs");
+    const playCounts = new Map<number, number>();
+    for (const log of playbackLogs) {
+      playCounts.set(log.mediaId, (playCounts.get(log.mediaId) || 0) + 1);
+    }
+    const sorted = allMedia
+      .map((m) => ({
+        id: m.id,
+        title: m.title,
+        artist: m.artist || "",
+        type: m.type,
+        playCount: playCounts.get(m.id) || 0,
+      }))
+      .sort((a, b) => b.playCount - a.playCount)
+      .slice(0, 10);
+    return { status: 200, data: sorted };
+  }
+
+  if (path === "/api/activity/recent" || path === "/api/dashboard/recent-activity") {
+    const playbackLogs = await getAll<DBPlaybackLog>("playbackLogs");
+    const allMedia = await getAll<DBMedia>("media");
+    const allClients = await getAll<DBClient>("clients");
+    const mediaMap = new Map(allMedia.map((m) => [m.id, m]));
+    const clientMap = new Map(allClients.map((c) => [c.id, c]));
+
+    const recent = playbackLogs
+      .slice(-20)
+      .reverse()
+      .map((l) => {
+        const m = mediaMap.get(l.mediaId);
+        const c = clientMap.get(l.clientId);
+        return {
+          id: l.id,
+          mediaTitle: m?.title || "Mídia",
+          clientName: c?.name || "Cliente",
+          playedAt: l.playedAt,
+        };
+      });
+    return { status: 200, data: recent };
   }
 
   // ── Clients Routes ──
