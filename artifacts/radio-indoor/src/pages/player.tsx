@@ -172,7 +172,7 @@ export default function PlayerPage() {
     }
   }, [queueError]);
 
-  // Fetch all active playlists for this device's client (only when player is active)
+  // Fetch all active playlists for this device's client(s) (only when player is active)
   const playlistsParams = { uuid, email };
   const { data: availablePlaylists } = useGetPlaybackPlaylists(
     playlistsParams,
@@ -185,9 +185,19 @@ export default function PlayerPage() {
     }
   );
 
+  // Sync selected playlist ID when availablePlaylists arrives or changes
+  useEffect(() => {
+    if (!availablePlaylists || availablePlaylists.length === 0) return;
+    const exists = selectedPlaylistId ? availablePlaylists.some((p) => p.id === selectedPlaylistId) : false;
+    if (!exists) {
+      const firstId = availablePlaylists[0]!.id;
+      setSelectedPlaylistId(firstId);
+      setStoredPlaylistId(uuid, firstId);
+      setStoredPlaylistIdForEmail(email, firstId);
+    }
+  }, [availablePlaylists, selectedPlaylistId, uuid, email]);
+
   // Sync selected playlist ID from the queue response.
-  // If the stored ID was invalid (not in the active playlists), the API fell back
-  // to the first active playlist — update local state to reflect that.
   useEffect(() => {
     if (!queue?.playlistId) return;
     if (selectedPlaylistId !== queue.playlistId) {
@@ -614,10 +624,11 @@ export default function PlayerPage() {
 
   const handleEmailSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = inputEmail.trim();
+    const trimmed = inputEmail.trim().toLowerCase();
     if (!trimmed) return;
     setEmail(trimmed);
     setStoredEmail(trimmed);
+    setSelectedPlaylistId(getStoredPlaylistIdForEmail(trimmed));
     setPlayerState("pending");
     register.mutate({ data: { uuid, email: trimmed } });
   };

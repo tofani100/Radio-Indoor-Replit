@@ -665,12 +665,8 @@ export async function handleStandaloneRequest(
     const clients = await getAll<DBClient>("clients");
     const activeClients = clients.filter((c) => c.active);
 
-    // 1. Check if email is in masterEmail, authorizedEmails, or email of any active client
     const authorizedClient = activeClients.find((c) => {
-      if (c.masterEmail && c.masterEmail.toLowerCase() === email) return true;
-      if (c.email && c.email.toLowerCase() === email) return true;
-      if (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === email)) return true;
-      return false;
+      return extractClientAuthorizedEmails(c).includes(email);
     });
 
     if (authorizedClient) {
@@ -713,7 +709,6 @@ export async function handleStandaloneRequest(
       };
     }
 
-    // 2. Email is NOT registered in any client -> Reject with pending / unauthorized status
     return {
       status: 200,
       data: {
@@ -743,12 +738,11 @@ export async function handleStandaloneRequest(
     const clients = await getAll<DBClient>("clients");
     const activeClients = clients.filter((c) => c.active);
 
+    const cleanParam = (emailParam || "").trim().toLowerCase();
     const matchingClients = activeClients.filter((c) => {
       if (clientIdParam && c.id === parseInt(clientIdParam)) return true;
-      if (emailParam) {
-        if (c.masterEmail && c.masterEmail.toLowerCase() === emailParam) return true;
-        if (c.email && c.email.toLowerCase() === emailParam) return true;
-        if (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === emailParam)) return true;
+      if (cleanParam) {
+        return extractClientAuthorizedEmails(c).includes(cleanParam);
       }
       return false;
     });
@@ -770,6 +764,10 @@ export async function handleStandaloneRequest(
     let activePlaylist = requestedPlaylistId
       ? clientPlaylists.find((p) => p.id === requestedPlaylistId)
       : clientPlaylists[0];
+
+    if (!activePlaylist && clientPlaylists.length > 0) {
+      activePlaylist = clientPlaylists[0];
+    }
 
     const targetClient = activePlaylist
       ? matchingClients.find((c) => c.id === activePlaylist.clientId) || matchingClients[0]!
@@ -878,11 +876,10 @@ export async function handleStandaloneRequest(
     const clients = await getAll<DBClient>("clients");
     const activeClients = clients.filter((c) => c.active);
 
+    const cleanParam = (emailParam || "").trim().toLowerCase();
     const matchingClients = activeClients.filter((c) => {
-      if (emailParam) {
-        if (c.masterEmail && c.masterEmail.toLowerCase() === emailParam) return true;
-        if (c.email && c.email.toLowerCase() === emailParam) return true;
-        if (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === emailParam)) return true;
+      if (cleanParam) {
+        return extractClientAuthorizedEmails(c).includes(cleanParam);
       }
       return false;
     });
