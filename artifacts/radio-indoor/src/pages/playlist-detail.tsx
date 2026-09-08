@@ -118,7 +118,8 @@ export default function PlaylistDetailPage() {
     }
   }, [playlist?.items]);
 
-  const { data: allMedia } = useListMedia({}, { query: { queryKey: getListMediaQueryKey({}) } });
+  const mediaParams = playlist?.clientId ? { clientId: playlist.clientId } : {};
+  const { data: allMedia } = useListMedia(mediaParams, { query: { queryKey: getListMediaQueryKey(mediaParams), enabled: !!playlist?.clientId } });
   const { data: clients } = useListClients({ query: { queryKey: getListClientsQueryKey() } });
   const currentClient = useMemo(
     () => clients?.find((c) => c.id === playlist?.clientId),

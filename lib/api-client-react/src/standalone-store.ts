@@ -1396,9 +1396,14 @@ export async function handleStandaloneRequest(
     if (clientIdParam) result = result.filter((m) => m.clientId === parseInt(clientIdParam));
     if (typeParam && typeParam !== "all") result = result.filter((m) => m.type === typeParam);
 
-    // Preload missing blobs from Firestore chunks in parallel
-    await Promise.all(
-      result.map(async (m) => {
+    const enriched = result.map((m) => ({
+      ...m,
+      url: getMediaBlobUrl(m.id, inMemoryMediaBlobs.get(m.id) || m.blob, m.url),
+    }));
+
+    // Trigger missing chunk loads in background without blocking response
+    setTimeout(() => {
+      result.forEach(async (m) => {
         if (!m.blob && !inMemoryMediaBlobs.has(m.id) && m.chunkCount && m.chunkCount > 0) {
           try {
             const loadedBlob = await loadMediaBlobFromFirestore(m.id, m.chunkCount, m.format ? `audio/${m.format}` : "audio/mpeg");
@@ -1409,13 +1414,9 @@ export async function handleStandaloneRequest(
             }
           } catch {}
         }
-      })
-    );
+      });
+    }, 10);
 
-    const enriched = result.map((m) => ({
-      ...m,
-      url: getMediaBlobUrl(m.id, inMemoryMediaBlobs.get(m.id) || m.blob, m.url),
-    }));
     return { status: 200, data: enriched };
   }
 
@@ -1535,6 +1536,37 @@ export async function handleStandaloneRequest(
   if (mediaMatch && method === "DELETE") {
     const mediaId = parseInt(mediaMatch[1]!);
     await remove("media", mediaId);
+    return { status: 200, data: { success: true } };
+  }
+
+  if (mediaMatch && (method === "PUT" || method === "PATCH")) {
+    const mediaId = parseInt(mediaMatch[1]!);
+    const existing = await getById<DBMedia>("media", mediaId);
+    if (!existing) {
+      return { status: 404, data: { error: "Not Found", message: "Mídia não encontrada" } };
+    }
+    const updated: DBMedia = {
+      ...existing,
+      ...(body.title !== undefined ? { title: body.title } : {}),
+      ...(body.artist !== undefined ? { artist: body.artist } : {}),
+      ...(body.type !== undefined ? { type: body.type } : {}),
+      ...(body.clientId !== undefined ? { clientId: parseInt(body.clientId) } : {}),
+      ...(body.duration !== undefined ? { duration: body.duration } : {}),
+    };
+    await update("media", updated);
+    return { status: 200, data: updated };
+  }
+
+  if (path === "/api/media/batch-update-type" && method === "POST") {
+    const { ids, type } = body || {};
+    if (Array.isArray(ids) && type) {
+      for (const id of ids) {
+        const existing = await getById<DBMedia>("media", id);
+        if (existing) {
+          await update("media", { ...existing, type });
+        }
+      }
+    }
     return { status: 200, data: { success: true } };
   }
 

@@ -98,14 +98,15 @@ export default function MediaPage() {
     }
   };
 
+  const [uploadType, setUploadType] = useState<"music" | "jingle" | "voiceover">("music");
+
   const handleFilesSelected = (files: FileList | null) => {
     if (!files) return;
-    const defaultType: "music" | "jingle" | "voiceover" =
-      typeFilter === "jingle" ? "jingle" : typeFilter === "voiceover" ? "voiceover" : "music";
+    const initialType = uploadType;
     const items: UploadItem[] = Array.from(files).map((f) => ({
       file: f,
       title: f.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ").trim(),
-      type: defaultType,
+      type: initialType,
       progress: 0,
       status: "queued" as const,
     }));
@@ -236,12 +237,52 @@ export default function MediaPage() {
       {selectedCount > 0 && (
         <div
           data-testid="bulk-action-bar"
-          className="flex items-center justify-between gap-3 mb-3 px-4 py-2.5 bg-primary/5 border border-primary/20 rounded-lg"
+          className="flex flex-wrap items-center justify-between gap-3 mb-3 px-4 py-2.5 bg-primary/5 border border-primary/20 rounded-lg"
         >
           <span className="text-sm text-foreground">
             <strong>{selectedCount}</strong> {selectedCount === 1 ? "mídia selecionada" : "mídias selecionadas"}
           </span>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">Mover para:</span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs border-blue-500/30 text-blue-600 hover:bg-blue-50"
+              onClick={async () => {
+                await handleStandaloneRequest("/api/media/batch-update-type", "POST", { ids: visibleSelected, type: "music" });
+                toast({ title: `${selectedCount} mídia(s) alterada(s) para Música` });
+                invalidateMedia();
+                setSelected(new Set());
+              }}
+            >
+              🎵 Música
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs border-amber-500/30 text-amber-600 hover:bg-amber-50"
+              onClick={async () => {
+                await handleStandaloneRequest("/api/media/batch-update-type", "POST", { ids: visibleSelected, type: "jingle" });
+                toast({ title: `${selectedCount} mídia(s) alterada(s) para Jingle` });
+                invalidateMedia();
+                setSelected(new Set());
+              }}
+            >
+              🔔 Jingle
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs border-purple-500/30 text-purple-600 hover:bg-purple-50"
+              onClick={async () => {
+                await handleStandaloneRequest("/api/media/batch-update-type", "POST", { ids: visibleSelected, type: "voiceover" });
+                toast({ title: `${selectedCount} mídia(s) alterada(s) para Locução` });
+                invalidateMedia();
+                setSelected(new Set());
+              }}
+            >
+              🎙️ Locução
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -257,7 +298,7 @@ export default function MediaPage() {
               onClick={() => setConfirmBulkDelete(true)}
             >
               <Trash2 className="w-3.5 h-3.5 mr-1.5" />
-              Excluir selecionadas
+              Excluir
             </Button>
           </div>
         </div>
@@ -318,10 +359,26 @@ export default function MediaPage() {
                     />
                   </td>
                   <td className="px-5 py-4">
-                    <span className={cn("inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded font-medium", badgeConfig.bg)}>
-                      {badgeConfig.icon}
-                      {badgeConfig.label}
-                    </span>
+                    <Select
+                      value={m.type}
+                      onValueChange={async (val) => {
+                        await handleStandaloneRequest(`/api/media/${m.id}`, "PATCH", { type: val });
+                        toast({ title: `Tipo alterado para ${val === "music" ? "Música" : val === "jingle" ? "Jingle" : "Locução"}` });
+                        invalidateMedia();
+                      }}
+                    >
+                      <SelectTrigger className="h-7 w-28 text-xs border-0 bg-transparent p-0 focus:ring-0 shadow-none">
+                        <span className={cn("inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded font-medium cursor-pointer", badgeConfig.bg)}>
+                          {badgeConfig.icon}
+                          {badgeConfig.label}
+                        </span>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="music">🎵 Música</SelectItem>
+                        <SelectItem value="jingle">🔔 Jingle</SelectItem>
+                        <SelectItem value="voiceover">🎙️ Locução</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </td>
                   <td className="px-5 py-4 font-medium text-foreground">{m.title}</td>
                   <td className="px-5 py-4 text-muted-foreground">{m.artist ?? "–"}</td>
@@ -399,6 +456,25 @@ export default function MediaPage() {
                   ⚠️ Escolha um cliente para poder enviar mídias.
                 </p>
               )}
+            </div>
+
+            <div>
+              <Label>Tipo padrão dos arquivos</Label>
+              <Select
+                value={uploadType}
+                onValueChange={(v) => {
+                  const t = v as "music" | "jingle" | "voiceover";
+                  setUploadType(t);
+                  setUploadItems((prev) => prev.map((u) => (u.status === "queued" ? { ...u, type: t } : u)));
+                }}
+              >
+                <SelectTrigger data-testid="select-default-upload-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="music">🎵 Música</SelectItem>
+                  <SelectItem value="jingle">🔔 Jingle</SelectItem>
+                  <SelectItem value="voiceover">🎙️ Locução</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <div
               className={cn(
