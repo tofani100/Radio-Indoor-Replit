@@ -1,34 +1,40 @@
-import { useState } from "react";
-import { useLocation } from "wouter";
-import { Radio, Eye, EyeOff, X } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Link, useLocation } from "wouter";
+import { Radio, Eye, EyeOff, PlayCircle, Info } from "lucide-react";
 import { useAdminLogin, handleStandaloneRequest } from "@workspace/api-client-react";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 
 export default function LoginPage() {
   const [, setLocation] = useLocation();
-  const { setUser } = useAuth();
+  const { user, setUser } = useAuth();
   const { toast } = useToast();
 
-  const [email, setEmail] = useState("admin@radioindoor.com");
-  const [password, setPassword] = useState("admin123");
+  // If already authenticated as the master admin tofani100@gmail.com, can prefill or redirect
+  const isMasterUser = user?.email?.toLowerCase() === "tofani100@gmail.com";
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  useEffect(() => {
+    if (isMasterUser) {
+      setEmail("tofani100@gmail.com");
+    }
+  }, [isMasterUser]);
 
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const login = useAdminLogin({
     mutation: {
-      onSuccess: (user) => {
+      onSuccess: (userData) => {
         try {
-          localStorage.setItem("radio_indoor_trusted_admin", "admin@radioindoor.com");
+          localStorage.setItem("radio_indoor_trusted_admin", (userData as any)?.email || "admin");
         } catch {
           // ignore
         }
-        setUser(user as { id: number; email: string; name: string; role: string });
-        toast({ title: "Bem-vindo!", description: "Acesso administrativo liberado." });
+        setUser(userData as { id: number; email: string; name: string; role: string });
+        toast({ title: "Bem-vindo!", description: "Acesso liberado com sucesso." });
         setLocation("/dashboard");
       },
       onError: (err: any) => {
@@ -45,12 +51,12 @@ export default function LoginPage() {
       const res = await handleStandaloneRequest("/api/auth/login", "POST", { email, password });
       if (res.status === 200 && res.data) {
         try {
-          localStorage.setItem("radio_indoor_trusted_admin", "admin@radioindoor.com");
+          localStorage.setItem("radio_indoor_trusted_admin", res.data.email);
         } catch {
           // ignore
         }
         setUser(res.data as { id: number; email: string; name: string; role: string });
-        toast({ title: "Bem-vindo!", description: "Acesso administrativo liberado." });
+        toast({ title: "Bem-vindo!", description: "Acesso liberado com sucesso." });
         setLocation("/dashboard");
         setIsSubmitting(false);
         return;
@@ -79,12 +85,12 @@ export default function LoginPage() {
         </div>
         <div>
           <blockquote className="text-2xl font-light text-sidebar-foreground/80 leading-relaxed">
-            "Gerenciamento profissional de audio para seus clientes — em qualquer estabelecimento."
+            "Gerenciamento profissional de áudio para seus clientes — em qualquer estabelecimento."
           </blockquote>
-          <p className="mt-6 text-sm text-sidebar-foreground/40 uppercase tracking-widest">Sistema de Radio Indoor</p>
+          <p className="mt-6 text-sm text-sidebar-foreground/40 uppercase tracking-widest">Sistema de Rádio Indoor</p>
         </div>
         <div className="grid grid-cols-3 gap-4">
-          {[["Multi-Tenant", "Gestao de multiplos clientes"], ["PWA Player", "Toca em qualquer dispositivo"], ["Relatorios", "Comprove cada execucao"]].map(([title, desc]) => (
+          {[["Multi-Tenant", "Gestão de múltiplos clientes"], ["PWA Player", "Toca em qualquer dispositivo"], ["Relatórios", "Comprove cada execução"]].map(([title, desc]) => (
             <div key={title} className="bg-sidebar-accent rounded-lg p-4">
               <p className="text-xs font-semibold text-sidebar-primary mb-1">{title}</p>
               <p className="text-xs text-sidebar-foreground/50">{desc}</p>
@@ -104,7 +110,7 @@ export default function LoginPage() {
           </div>
 
           <h1 className="text-2xl font-semibold text-sidebar-foreground mb-1">Acesso Administrativo</h1>
-          <p className="text-sm text-sidebar-foreground/50 mb-8">Entre com suas credenciais para continuar.</p>
+          <p className="text-sm text-sidebar-foreground/50 mb-6">Entre com suas credenciais de gestor para acessar o painel.</p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
@@ -114,8 +120,9 @@ export default function LoginPage() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@radioindoor.com"
+                placeholder="seu-email@dominio.com"
                 required
+                autoComplete="email"
                 className="w-full px-4 py-3 rounded-lg bg-sidebar-accent border border-sidebar-border text-sidebar-foreground placeholder:text-sidebar-foreground/30 text-sm focus:outline-none focus:ring-2 focus:ring-sidebar-primary transition-all"
               />
             </div>
@@ -129,6 +136,7 @@ export default function LoginPage() {
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
                   required
+                  autoComplete="current-password"
                   className="w-full px-4 py-3 pr-12 rounded-lg bg-sidebar-accent border border-sidebar-border text-sidebar-foreground placeholder:text-sidebar-foreground/30 text-sm focus:outline-none focus:ring-2 focus:ring-sidebar-primary transition-all"
                 />
                 <button
@@ -137,7 +145,7 @@ export default function LoginPage() {
                   onClick={() => setShowPassword((v) => !v)}
                   aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
                   title={showPassword ? "Ocultar senha" : "Mostrar senha"}
-                  className="absolute inset-y-0 right-0 flex items-center justify-center w-12 text-white hover:text-sidebar-primary transition-colors"
+                  className="absolute inset-y-0 right-0 flex items-center justify-center w-12 text-white hover:text-sidebar-primary transition-colors cursor-pointer"
                 >
                   {showPassword ? <EyeOff className="w-5 h-5" strokeWidth={2.25} /> : <Eye className="w-5 h-5" strokeWidth={2.25} />}
                 </button>
@@ -147,14 +155,32 @@ export default function LoginPage() {
               data-testid="button-submit"
               type="submit"
               disabled={isSubmitting || login.isPending}
-              className="w-full py-3 px-4 rounded-lg bg-sidebar-primary text-sidebar-primary-foreground text-sm font-semibold hover:opacity-90 active:scale-[0.99] transition-all disabled:opacity-60 cursor-pointer"
+              className="w-full py-3 px-4 rounded-lg bg-sidebar-primary text-sidebar-primary-foreground text-sm font-semibold hover:opacity-90 active:scale-[0.99] transition-all disabled:opacity-60 cursor-pointer shadow-md shadow-primary/20"
             >
-              {isSubmitting || login.isPending ? "Entrando..." : "Entrar"}
+              {isSubmitting || login.isPending ? "Entrando..." : "Entrar no Painel"}
             </button>
           </form>
 
-          <p className="mt-8 text-center text-xs text-sidebar-foreground/30 font-mono">
-            Radio Indoor &copy; {new Date().getFullYear()} &bull; v0.2.1
+          {/* Direct link guidance for clients/stores */}
+          <div className="mt-8 p-4 rounded-xl bg-sidebar-accent/70 border border-sidebar-border space-y-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-sidebar-foreground">
+              <Info className="w-4 h-4 text-sidebar-primary shrink-0" />
+              <span>É um cliente, loja ou filial?</span>
+            </div>
+            <p className="text-xs text-sidebar-foreground/70 leading-relaxed">
+              Se você deseja apenas reproduzir suas músicas no estabelecimento, você não precisa de login. Acesse o Player diretamente:
+            </p>
+            <Link
+              to="/player"
+              className="inline-flex items-center gap-2 text-xs font-semibold text-sidebar-primary hover:underline mt-1 bg-sidebar-primary/10 px-3 py-1.5 rounded-lg border border-sidebar-primary/20 transition-all hover:bg-sidebar-primary/20"
+            >
+              <PlayCircle className="w-4 h-4" />
+              <span>👉 Clique aqui para abrir o Player (https://per.playcomunique.com.br/player)</span>
+            </Link>
+          </div>
+
+          <p className="mt-6 text-center text-xs text-sidebar-foreground/30 font-mono">
+            Radio Indoor &copy; {new Date().getFullYear()}
           </p>
         </div>
       </div>

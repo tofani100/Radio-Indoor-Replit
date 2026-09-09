@@ -687,10 +687,9 @@ export async function handleStandaloneRequest(
   }
 
   if (path === "/api/auth/me") {
-    let user = getSessionUser();
+    const user = getSessionUser();
     if (!user) {
-      user = { id: 1, email: "admin@radioindoor.com", name: "Administrador", role: "admin" };
-      setSessionUser(user);
+      return { status: 401, data: { error: "Unauthorized", message: "Não autenticado" } };
     }
     return { status: 200, data: user };
   }
