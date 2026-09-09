@@ -105,20 +105,58 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
     },
   });
 
-  const addEmail = () => {
-    const v = emailInput.trim().toLowerCase();
-    if (!v) return;
-    if (!/^\S+@\S+\.\S+$/.test(v)) {
-      setEmailError("Email inválido");
+  const parseEmailTokens = (text: string): string[] => {
+    return text
+      .split(/[\r\n,;\s]+/)
+      .map((t) => t.trim().toLowerCase())
+      .filter((t) => t.length > 0);
+  };
+
+  const addEmail = (customInput?: string) => {
+    const raw = (customInput !== undefined ? customInput : emailInput).trim();
+    if (!raw) return;
+
+    const tokens = parseEmailTokens(raw);
+    if (tokens.length === 0) return;
+
+    const newValidEmails: string[] = [];
+    const invalidTokens: string[] = [];
+
+    tokens.forEach((t) => {
+      if (!/^\S+@\S+\.\S+$/.test(t)) {
+        invalidTokens.push(t);
+      } else if (!authorizedEmails.includes(t) && !newValidEmails.includes(t)) {
+        newValidEmails.push(t);
+      }
+    });
+
+    if (invalidTokens.length > 0 && newValidEmails.length === 0) {
+      setEmailError(`E-mail(s) inválido(s): ${invalidTokens.slice(0, 3).join(", ")}`);
       return;
     }
-    if (authorizedEmails.includes(v)) {
-      setEmailError("Email já adicionado");
-      return;
+
+    if (newValidEmails.length > 0) {
+      setAuthorizedEmails([...authorizedEmails, ...newValidEmails]);
+      setEmailInput("");
+      setEmailError(
+        invalidTokens.length > 0
+          ? `${newValidEmails.length} adicionado(s). Inválido(s): ${invalidTokens.join(", ")}`
+          : null
+      );
+    } else {
+      setEmailInput("");
+      setEmailError("E-mail(s) já estavam adicionados");
     }
-    setAuthorizedEmails([...authorizedEmails, v]);
-    setEmailInput("");
-    setEmailError(null);
+  };
+
+  const handlePasteEmails = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData.getData("text");
+    if (!text) return;
+    const tokens = parseEmailTokens(text);
+    if (tokens.length > 1 || text.includes("\n") || text.includes(",") || text.includes(";")) {
+      e.preventDefault();
+      addEmail(text);
+    }
   };
 
   const removeEmail = (target: string) => {
@@ -126,7 +164,7 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
   };
 
   const handleEmailKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" || e.key === ",") {
+    if (e.key === "Enter" || e.key === "," || e.key === ";") {
       e.preventDefault();
       addEmail();
     } else if (e.key === "Backspace" && !emailInput && authorizedEmails.length > 0) {
@@ -211,12 +249,13 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
               <div className="flex-1 flex items-center min-w-[160px] gap-1">
                 <input
                   data-testid="input-authorized-email"
-                  type="email"
+                  type="text"
                   value={emailInput}
                   onChange={(e) => { setEmailInput(e.target.value); setEmailError(null); }}
                   onKeyDown={handleEmailKeyDown}
+                  onPaste={handlePasteEmails}
                   onBlur={() => emailInput.trim() && addEmail()}
-                  placeholder={authorizedEmails.length === 0 ? "Digite o email e tecle Enter..." : "+ adicionar outro email"}
+                  placeholder={authorizedEmails.length === 0 ? "Cole ou digite e-mails (quebra de linha, vírgula ou espaço)..." : "+ adicionar outro ou colar lista..."}
                   className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
                 />
                 {emailInput.trim() && (
@@ -225,7 +264,7 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
                     size="sm"
                     variant="ghost"
                     className="h-6 px-2 text-xs text-primary font-semibold"
-                    onClick={addEmail}
+                    onClick={() => addEmail()}
                   >
                     Adicionar
                   </Button>
@@ -236,7 +275,7 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
               <p className="text-[11px] text-destructive mt-1">{emailError}</p>
             ) : (
               <p className="text-[11px] text-muted-foreground mt-1">
-                Qualquer pessoa que digitar um destes e-mails no Player terá acesso imediato às playlists deste cliente.
+                Dica: você pode colar uma lista inteira de e-mails de uma só vez (linhas separadas, vírgulas ou espaços).
               </p>
             )}
           </div>
