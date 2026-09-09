@@ -34,6 +34,24 @@ router.post("/devices/register", async (req, res) => {
   ) ?? null;
 
   const matchAuthorized = !!resolvedClient;
+  const isMasterEmail = cleanEmail === "tofani100@gmail.com";
+
+  // Check if another device is currently active with this email (except master email)
+  if (!isMasterEmail && matchAuthorized) {
+    const ACTIVE_SESSION_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
+    const allDevicesForEmail = await db.select().from(devicesTable).where(eq(devicesTable.email, cleanEmail));
+    const conflicting = allDevicesForEmail.find(
+      (d) => d.uuid !== cleanUuid && d.status === "active" && isOnline(d.lastSeen)
+    );
+    if (conflicting) {
+      res.json({
+        status: "duplicate",
+        message: `este email (${cleanEmail}) já esta logado em outra estação e não pode ser duplicado! peça autorização ao administrador do sistema !`,
+        registered: false,
+      });
+      return;
+    }
+  }
 
   // Check if device already exists by UUID
   const [existing] = await db.select().from(devicesTable).where(eq(devicesTable.uuid, cleanUuid)).limit(1);

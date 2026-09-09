@@ -770,10 +770,39 @@ export async function handleStandaloneRequest(
     if (authorizedClient) {
       console.warn("[REGISTER] ✅ AUTORIZADO pelo cliente:", authorizedClient.name);
 
+      const isMasterEmail = email === "tofani100@gmail.com";
+
       let devId = 1;
       try {
         const allDevs = await getAll<DBDevice>("devices");
         const nowIso = new Date().toISOString();
+        const nowMs = Date.now();
+
+        // Check if there is another ACTIVE station/browser session for this non-master email
+        if (!isMasterEmail) {
+          const ACTIVE_SESSION_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes window of active heartbeat/seen
+          const conflictingDev = allDevs.find((d) => {
+            if (!d.email || d.email.toLowerCase() !== email) return false;
+            if (uuid && d.uuid === uuid) return false; // same browser tab/device instance
+            if (d.status !== "active") return false;
+            const lastSeenMs = d.lastSeen ? new Date(d.lastSeen).getTime() : 0;
+            return nowMs - lastSeenMs < ACTIVE_SESSION_THRESHOLD_MS;
+          });
+
+          if (conflictingDev) {
+            console.warn(`[REGISTER] ⛔ Conflito de sessão para email ${email}. Já logado em uuid ${conflictingDev.uuid}`);
+            return {
+              status: 200,
+              data: {
+                status: "duplicate",
+                registered: false,
+                email: email,
+                message: `Este e-mail (${email}) já está logado em outra estação e não pode ser duplicado! Peça autorização ao administrador do sistema!`,
+              },
+            };
+          }
+        }
+
         let existingDev = allDevs.find((d) => (uuid && d.uuid === uuid) || (d.email && d.email.toLowerCase() === email));
         if (existingDev) {
           devId = existingDev.id;

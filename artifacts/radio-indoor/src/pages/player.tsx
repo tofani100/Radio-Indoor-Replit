@@ -55,7 +55,7 @@ function setStoredPlaylistIdForEmail(email: string, id: number) {
   localStorage.setItem(`radio_indoor_playlist_email_${email}`, String(id));
 }
 
-type PlayerState = "gate" | "pending" | "blocked" | "active";
+type PlayerState = "gate" | "pending" | "duplicate" | "blocked" | "active";
 
 export default function PlayerPage() {
   const uuid = getOrCreateUUID();
@@ -145,6 +145,7 @@ export default function PlayerPage() {
     if (!data) return;
     if (data.status === "active") setPlayerState("active");
     else if (data.status === "blocked") setPlayerState("blocked");
+    else if (data.status === "duplicate") setPlayerState("duplicate");
     else setPlayerState("pending");
   }, [register.data]);
 
@@ -735,6 +736,55 @@ export default function PlayerPage() {
             {[0, 1, 2].map((i) => (
               <div key={i} className="w-2 h-2 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />
             ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (playerState === "duplicate") {
+    return (
+      <div className="min-h-screen bg-sidebar flex items-center justify-center p-8">
+        <div className="text-center max-w-md bg-sidebar-accent/50 border border-destructive/40 p-8 rounded-2xl shadow-2xl">
+          <div className="w-16 h-16 rounded-2xl bg-destructive/20 flex items-center justify-center mx-auto mb-6">
+            <AlertCircle className="w-8 h-8 text-destructive animate-pulse" />
+          </div>
+          <h1 className="text-xl font-bold text-destructive mb-3">Sessão Duplicada Não Permitida</h1>
+          <p className="text-sm text-sidebar-foreground/90 font-medium mb-3 leading-relaxed">
+            Este e-mail <span className="font-bold text-destructive bg-destructive/10 px-2 py-0.5 rounded">({email})</span> já está logado em outra estação e não pode ser duplicado!
+          </p>
+          <p className="text-xs text-sidebar-foreground/70 mb-6 leading-relaxed">
+            Por motivos de segurança e cumprimento de regras da plataforma, o mesmo e-mail não pode ser executado simultaneamente em mais de um navegador ou filial. <strong>Peça autorização ao administrador do sistema!</strong>
+          </p>
+
+          <div className="bg-sidebar-accent/60 border border-sidebar-border rounded-xl px-4 py-3 mb-6">
+            <p className="text-[10px] uppercase tracking-widest text-sidebar-foreground/40 mb-1">E-mail em conflito</p>
+            <p className="text-sm font-mono text-destructive font-semibold break-all">{email}</p>
+          </div>
+
+          <div className="flex flex-col gap-3">
+            <button
+              data-testid="button-duplicate-retry"
+              type="button"
+              onClick={() => {
+                register.mutate({ data: { uuid, email } });
+              }}
+              className="w-full py-2.5 px-4 rounded-xl bg-sidebar-primary text-sidebar-primary-foreground text-xs font-semibold hover:opacity-90 transition-opacity"
+            >
+              Tentar novamente agora
+            </button>
+
+            <button
+              data-testid="button-duplicate-switch"
+              type="button"
+              onClick={() => {
+                clearDeviceIdentity();
+                window.location.reload();
+              }}
+              className="text-xs text-sidebar-foreground/60 hover:text-sidebar-primary underline underline-offset-4"
+            >
+              Entrar com outro e-mail
+            </button>
           </div>
         </div>
       </div>
