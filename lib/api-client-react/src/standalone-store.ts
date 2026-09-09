@@ -64,6 +64,7 @@ export interface DBPlaylistItem {
   playlistId: number;
   mediaId: number;
   position: number;
+  active?: boolean;
 }
 
 export interface DBMedia {
@@ -950,7 +951,9 @@ export async function handleStandaloneRequest(
 
     const clientMedia = allMedia.filter((m) => m.clientId === targetClientId);
     const allItems = await getAll<DBPlaylistItem>("playlistItems");
-    const playlistItems = allItems.filter((i) => i.playlistId === activePlaylist.id).sort((a, b) => a.position - b.position);
+    const playlistItems = allItems
+      .filter((i) => i.playlistId === activePlaylist.id && i.active !== false)
+      .sort((a, b) => a.position - b.position);
 
     let queueItems: any[] = [];
     if (playlistItems.length > 0) {
@@ -1379,11 +1382,28 @@ export async function handleStandaloneRequest(
     return { status: 201, data: { id, playlistId, mediaId: parseInt(mediaId), position: pos } };
   }
 
-  const plItemDeleteMatch = path.match(/^\/api\/playlists\/(\d+)\/items\/(\d+)$/);
-  if (plItemDeleteMatch && method === "DELETE") {
-    const itemId = parseInt(plItemDeleteMatch[2]!);
-    await remove("playlistItems", itemId);
-    return { status: 200, data: { success: true } };
+  const plItemMatch = path.match(/^\/api\/playlists\/(\d+)\/items\/(\d+)$/);
+  if (plItemMatch) {
+    const playlistId = parseInt(plItemMatch[1]!);
+    const itemId = parseInt(plItemMatch[2]!);
+
+    if (method === "PATCH" || method === "PUT") {
+      const existing = await getById<DBPlaylistItem>("playlistItems", itemId);
+      if (!existing) return { status: 404, data: { error: "Not Found", message: "Item não encontrado" } };
+      const updated: DBPlaylistItem = {
+        ...existing,
+        ...body,
+        id: itemId,
+        playlistId,
+      };
+      await update("playlistItems", updated);
+      return { status: 200, data: updated };
+    }
+
+    if (method === "DELETE") {
+      await remove("playlistItems", itemId);
+      return { status: 200, data: { success: true } };
+    }
   }
 
   const plReorderMatch = path.match(/^\/api\/playlists\/(\d+)\/reorder$/);

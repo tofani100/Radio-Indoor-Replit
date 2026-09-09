@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, GripVertical, Plus, Trash2, Music, Mic, ToggleLeft, ToggleRight, Search, CheckSquare, Square, Loader2, Settings2 } from "lucide-react";
+import { ArrowLeft, GripVertical, Plus, Trash2, Music, Mic, ToggleLeft, ToggleRight, Search, CheckSquare, Square, Loader2, Settings2, Eye, EyeOff } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -9,6 +9,7 @@ import {
   useReorderPlaylistItems, useRemovePlaylistItem, useAddPlaylistItemsBatch, useUpdatePlaylist,
   useListMedia, getListMediaQueryKey,
   useListClients, getListClientsQueryKey, useUpdateClient,
+  handleStandaloneRequest,
 } from "@workspace/api-client-react";
 import {
   DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent,
@@ -24,8 +25,20 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
-function SortableItem({ item, index, onRemove }: { item: any; index: number; onRemove: () => void }) {
+function SortableItem({
+  item,
+  index,
+  onRemove,
+  onToggleActive,
+}: {
+  item: any;
+  index: number;
+  onRemove: () => void;
+  onToggleActive: () => void;
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
+  const isBlocked = item.active === false;
+
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -35,10 +48,10 @@ function SortableItem({ item, index, onRemove }: { item: any; index: number; onR
 
   const badgeConfig =
     item.media?.type === "jingle"
-      ? { label: "Jingle", bg: "bg-amber-500/10 text-amber-600", icon: <Mic className="w-3 h-3" /> }
+      ? { label: "Jingle", bg: isBlocked ? "bg-muted text-muted-foreground/50" : "bg-amber-500/10 text-amber-600", icon: <Mic className="w-3 h-3" /> }
       : item.media?.type === "voiceover"
-      ? { label: "Locução", bg: "bg-purple-500/10 text-purple-600", icon: <Mic className="w-3 h-3" /> }
-      : { label: "Música", bg: "bg-blue-500/10 text-blue-600", icon: <Music className="w-3 h-3" /> };
+      ? { label: "Locução", bg: isBlocked ? "bg-muted text-muted-foreground/50" : "bg-purple-500/10 text-purple-600", icon: <Mic className="w-3 h-3" /> }
+      : { label: "Música", bg: isBlocked ? "bg-muted text-muted-foreground/50" : "bg-blue-500/10 text-blue-600", icon: <Music className="w-3 h-3" /> };
 
   return (
     <div
@@ -46,7 +59,8 @@ function SortableItem({ item, index, onRemove }: { item: any; index: number; onR
       style={style}
       data-testid={`playlist-item-${item.id}`}
       className={cn(
-        "flex items-center gap-3 px-4 py-3 bg-card border border-card-border rounded-lg transition-colors select-none",
+        "flex items-center gap-3 px-4 py-3 bg-card border rounded-lg transition-colors select-none",
+        isBlocked ? "border-card-border/60 bg-muted/40 opacity-60" : "border-card-border",
         isDragging && "opacity-75 shadow-xl border-primary ring-2 ring-primary/20 bg-muted/90"
       )}
     >
@@ -64,12 +78,57 @@ function SortableItem({ item, index, onRemove }: { item: any; index: number; onR
         {badgeConfig.icon}
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-foreground truncate">{item.media?.title ?? "–"}</p>
+        <div className="flex items-center gap-2">
+          <p className={cn("text-sm font-medium truncate", isBlocked ? "line-through text-muted-foreground" : "text-foreground")}>
+            {item.media?.title ?? "–"}
+          </p>
+          {isBlocked && (
+            <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 border border-amber-500/20">
+              Oculto / Bloqueado
+            </span>
+          )}
+        </div>
         {item.media?.artist && <p className="text-xs text-muted-foreground">{item.media.artist}</p>}
       </div>
-      <Button variant="ghost" size="sm" onClick={onRemove} data-testid={`button-remove-item-${item.id}`} className="text-muted-foreground hover:text-destructive">
-        <Trash2 className="w-4 h-4" />
-      </Button>
+
+      <div className="flex items-center gap-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onToggleActive}
+          data-testid={`button-toggle-item-${item.id}`}
+          className={cn(
+            "h-8 px-2 text-xs font-medium transition-colors",
+            isBlocked
+              ? "text-amber-600 hover:text-amber-700 hover:bg-amber-500/10"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted"
+          )}
+          title={isBlocked ? "Desbloquear / Ativar na reprodução" : "Bloquear / Ocultar da reprodução"}
+        >
+          {isBlocked ? (
+            <>
+              <EyeOff className="w-4 h-4 mr-1 text-amber-600" />
+              <span className="hidden sm:inline">Bloqueado</span>
+            </>
+          ) : (
+            <>
+              <Eye className="w-4 h-4 mr-1 text-emerald-600" />
+              <span className="hidden sm:inline text-emerald-600">Ativo</span>
+            </>
+          )}
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onRemove}
+          data-testid={`button-remove-item-${item.id}`}
+          className="text-muted-foreground hover:text-destructive h-8 px-2"
+          title="Remover definitivamente da playlist"
+        >
+          <Trash2 className="w-4 h-4" />
+        </Button>
+      </div>
     </div>
   );
 }
@@ -182,6 +241,30 @@ export default function PlaylistDetailPage() {
       toast({ title: "Todas as faixas foram removidas da playlist" });
       inv();
     } catch {
+      inv();
+    }
+  };
+
+  const handleToggleItemActive = async (itemId: number, currentActive?: boolean) => {
+    const nextActive = currentActive === false ? true : false;
+    // Optimistic UI update
+    setLocalItems((prev) =>
+      prev.map((it) => (it.id === itemId ? { ...it, active: nextActive } : it))
+    );
+
+    try {
+      await handleStandaloneRequest(`/api/playlists/${playlistId}/items/${itemId}`, "PATCH", {
+        active: nextActive,
+      });
+      toast({
+        title: nextActive ? "Faixa ativada na playlist" : "Faixa bloqueada / ocultada",
+        description: nextActive
+          ? "Esta faixa voltará a tocar no Player."
+          : "Esta faixa não tocará mais no Player até ser reativada.",
+      });
+      inv();
+    } catch (err) {
+      console.warn("Error toggling item status:", err);
       inv();
     }
   };
@@ -386,6 +469,7 @@ export default function PlaylistDetailPage() {
                   item={item}
                   index={idx}
                   onRemove={() => remove.mutate({ playlistId, itemId: item.id })}
+                  onToggleActive={() => handleToggleItemActive(item.id, item.active)}
                 />
               ))}
             </div>
