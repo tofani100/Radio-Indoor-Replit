@@ -12,6 +12,13 @@
           "radio-indoor-dev"
         ]
       }
+    },
+    "radio-indoor-dev": {
+      "hosting": {
+        "app": [
+          "radio-indoor-dev-92858"
+        ]
+      }
     }
   },
   "etags": {}
