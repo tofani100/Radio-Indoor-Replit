@@ -10,7 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 
 export const APP_PROD_VERSION = "V32";
-export const APP_DEV_VERSION = "Dev-V32";
+export const APP_DEV_VERSION = "Dev-V33";
 export const isDev = isDevEnvironment();
 export const APP_VERSION = isDev ? APP_DEV_VERSION : APP_PROD_VERSION;
 
@@ -163,12 +163,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           >
             <Menu className="w-5 h-5" />
           </button>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-1 min-w-0">
             <div className="flex items-center justify-center w-6 h-6 rounded bg-sidebar-primary flex-none">
               <Radio className="w-3 h-3 text-sidebar-primary-foreground" />
             </div>
             <span className="text-sm font-semibold text-sidebar-foreground truncate">{currentLabel}</span>
           </div>
+          {isDev && (
+            <span
+              data-testid="badge-version-mobile"
+              className="px-2 py-0.5 rounded-full bg-orange-500 text-white font-mono text-[10px] font-extrabold tracking-wider shadow-sm flex-none ml-auto"
+            >
+              {APP_DEV_VERSION}
+            </span>
+          )}
         </header>
 
         {/* Page content */}

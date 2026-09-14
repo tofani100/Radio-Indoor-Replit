@@ -232,16 +232,25 @@ function putLocal<T>(storeName: string, item: T): Promise<void> {
   }).catch(() => {});
 }
 
-function deleteLocal(storeName: string, id: number): Promise<void> {
+function deleteLocal(storeName: string, id: number | string): Promise<void> {
   return openDB().then((db) => {
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, "readwrite");
-      const store = tx.objectStore(storeName);
-      const req = store.delete(id);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
+    return new Promise<void>((resolve) => {
+      try {
+        const tx = db.transaction(storeName, "readwrite");
+        const store = tx.objectStore(storeName);
+        const numId = Number(id);
+        if (!isNaN(numId)) {
+          store.delete(numId);
+        }
+        store.delete(String(id));
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      } catch (err) {
+        console.warn(`[deleteLocal] error in ${storeName}:`, err);
+        resolve();
+      }
     });
-  });
+  }).catch(() => {});
 }
 
 // ── Cloud Firestore + Cache Sync ──
@@ -262,23 +271,41 @@ export async function getAll<T extends { id: number }>(storeName: string): Promi
           ...(existingBlob ? { blob: existingBlob } : {}),
         };
       });
+
+      // Synchronize local cache with Firestore: delete any items locally that were deleted in Firestore
+      const firestoreIds = new Set(items.map((it) => it.id));
+      for (const loc of local) {
+        if (!firestoreIds.has(loc.id)) {
+          await deleteLocal(storeName, loc.id);
+        }
+      }
+
       for (const it of items) {
         await putLocal(storeName, it);
       }
       return items;
     } else {
-      // Cloud is empty for this collection: check if local has data and push up to Cloud Firestore
-      if (local.length > 0) {
-        for (const item of local) {
-          try {
-            const dRef = doc(firestore, storeName, String(item.id));
-            const { blob, ...data } = item as any;
-            await setDoc(dRef, data);
-          } catch (syncErr) {
-            console.warn(`[Firestore] sync up ${storeName} item failed:`, syncErr);
+      // Cloud is empty for this collection
+      // ONLY sync up to Cloud if it's initial seeding for admins or clients, never restore deleted playlistItems!
+      if (storeName === "admins" || storeName === "clients") {
+        if (local.length > 0) {
+          for (const item of local) {
+            try {
+              const dRef = doc(firestore, storeName, String(item.id));
+              const { blob, ...data } = item as any;
+              await setDoc(dRef, data);
+            } catch (syncErr) {
+              console.warn(`[Firestore] sync up ${storeName} item failed:`, syncErr);
+            }
           }
+          return local;
         }
-        return local;
+      } else {
+        // If Cloud has 0 items for this collection, clear any stale local items as well!
+        for (const loc of local) {
+          await deleteLocal(storeName, loc.id);
+        }
+        return [];
       }
     }
   } catch (err) {
@@ -340,6 +367,17 @@ export async function remove(storeName: string, id: number): Promise<void> {
   try {
     const dRef = doc(firestore, storeName, String(id));
     await deleteDoc(dRef);
+
+    // Also check if any doc exists with this id field (in case Firestore doc ID differs)
+    try {
+      const snap = await getDocs(collection(firestore, storeName));
+      for (const d of snap.docs) {
+        const data = d.data();
+        if (d.id === String(id) || Number(d.id) === Number(id) || data.id === Number(id) || String(data.id) === String(id)) {
+          await deleteDoc(d.ref).catch(() => {});
+        }
+      }
+    } catch {}
   } catch (err) {
     console.warn(`[Firestore] remove(${storeName}) failed:`, err);
   }
@@ -1381,6 +1419,15 @@ export async function handleStandaloneRequest(
     const pos = typeof position === "number" ? position : currentItems.length;
     const id = await insert("playlistItems", { playlistId, mediaId: parseInt(mediaId), position: pos });
     return { status: 201, data: { id, playlistId, mediaId: parseInt(mediaId), position: pos } };
+  }
+  if (plItemsMatch && method === "DELETE") {
+    const playlistId = parseInt(plItemsMatch[1]!);
+    const allItems = await getAll<DBPlaylistItem>("playlistItems");
+    const toDelete = allItems.filter((i) => i.playlistId === playlistId);
+    for (const it of toDelete) {
+      await remove("playlistItems", it.id);
+    }
+    return { status: 200, data: { success: true, count: toDelete.length } };
   }
 
   const plItemMatch = path.match(/^\/api\/playlists\/(\d+)\/items\/(\d+)$/);

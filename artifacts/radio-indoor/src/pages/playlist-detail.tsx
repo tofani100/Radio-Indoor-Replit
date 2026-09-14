@@ -95,7 +95,10 @@ function SortableItem({
         <Button
           variant="ghost"
           size="sm"
-          onClick={onToggleActive}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleActive();
+          }}
           data-testid={`button-toggle-item-${item.id}`}
           className={cn(
             "h-8 px-2 text-xs font-medium transition-colors",
@@ -121,7 +124,10 @@ function SortableItem({
         <Button
           variant="ghost"
           size="sm"
-          onClick={onRemove}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
           data-testid={`button-remove-item-${item.id}`}
           className="text-muted-foreground hover:text-destructive h-8 px-2"
           title="Remover definitivamente da playlist"
@@ -217,29 +223,64 @@ export default function PlaylistDetailPage() {
   const remove = useRemovePlaylistItem({
     mutation: {
       onMutate: async ({ itemId }) => {
+        // Cancel any outgoing refetches so they don't overwrite optimistic update
+        await qc.cancelQueries({ queryKey: getGetPlaylistQueryKey(playlistId) });
+
+        // Snapshot previous playlist data
+        const previousPlaylist = qc.getQueryData<any>(getGetPlaylistQueryKey(playlistId));
+
+        // Optimistic UI state update
         setLocalItems((prev) => prev.filter((it) => it.id !== itemId));
+
+        // Optimistic TanStack Query cache update
+        qc.setQueryData(getGetPlaylistQueryKey(playlistId), (old: any) => {
+          if (!old) return old;
+          return {
+            ...old,
+            items: (old.items || []).filter((it: any) => it.id !== itemId),
+          };
+        });
+
+        // Also update playlist item count in the playlists list query cache if present
+        qc.setQueriesData({ queryKey: ["/api/playlists"] }, (old: any) => {
+          if (!Array.isArray(old)) return old;
+          return old.map((p: any) =>
+            p.id === playlistId ? { ...p, itemCount: Math.max(0, (p.itemCount || 1) - 1) } : p
+          );
+        });
+
+        return { previousPlaylist };
+      },
+      onError: (_err, _vars, context: any) => {
+        if (context?.previousPlaylist) {
+          qc.setQueryData(getGetPlaylistQueryKey(playlistId), context.previousPlaylist);
+          setLocalItems(context.previousPlaylist.items || []);
+        }
+        toast({ title: "Erro ao remover faixa", variant: "destructive" });
       },
       onSuccess: () => {
-        toast({ title: "Faixa removida" });
-        inv();
+        toast({ title: "Faixa removida da playlist" });
       },
-      onError: () => {
-        toast({ title: "Erro ao remover", variant: "destructive" });
+      onSettled: () => {
         inv();
+        qc.invalidateQueries({ queryKey: ["/api/playlists"] });
       },
     },
   });
 
   const handleClearAll = async () => {
     if (!confirm("Tem certeza que deseja remover todas as faixas desta playlist?")) return;
-    const current = [...localItems];
     setLocalItems([]);
+    qc.setQueryData(getGetPlaylistQueryKey(playlistId), (old: any) => (old ? { ...old, items: [] } : old));
+    qc.setQueriesData({ queryKey: ["/api/playlists"] }, (old: any) => {
+      if (!Array.isArray(old)) return old;
+      return old.map((p: any) => (p.id === playlistId ? { ...p, itemCount: 0 } : p));
+    });
     try {
-      for (const it of current) {
-        await remove.mutateAsync({ playlistId, itemId: it.id });
-      }
+      await handleStandaloneRequest(`/api/playlists/${playlistId}/items`, "DELETE", null);
       toast({ title: "Todas as faixas foram removidas da playlist" });
       inv();
+      qc.invalidateQueries({ queryKey: ["/api/playlists"] });
     } catch {
       inv();
     }
@@ -251,6 +292,13 @@ export default function PlaylistDetailPage() {
     setLocalItems((prev) =>
       prev.map((it) => (it.id === itemId ? { ...it, active: nextActive } : it))
     );
+    qc.setQueryData(getGetPlaylistQueryKey(playlistId), (old: any) => {
+      if (!old) return old;
+      return {
+        ...old,
+        items: (old.items || []).map((it: any) => (it.id === itemId ? { ...it, active: nextActive } : it)),
+      };
+    });
 
     try {
       await handleStandaloneRequest(`/api/playlists/${playlistId}/items/${itemId}`, "PATCH", {
@@ -275,6 +323,7 @@ export default function PlaylistDetailPage() {
         setAddProgress(100);
         toast({ title: `${res.added} ${res.added === 1 ? "faixa adicionada" : "faixas adicionadas"}` });
         inv();
+        qc.invalidateQueries({ queryKey: ["/api/playlists"] });
         setTimeout(() => {
           setAddOpen(false);
           setSelected(new Set());
