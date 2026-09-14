@@ -11,7 +11,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import logoSrc from "@assets/LOGO_1777766957414.png";
 import { usePwaInstall } from "@/hooks/usePwaInstall";
-import { APP_VERSION } from "@/components/Layout";
+import { APP_VERSION, isDev, APP_DEV_VERSION, APP_PROD_VERSION } from "@/components/Layout";
 import "@/styles/dj-console.css";
 
 function getOrCreateUUID(): string {
@@ -894,9 +894,15 @@ export default function PlayerPage() {
           <span className="hidden sm:flex text-[var(--dj-cyan)] font-bold tracking-widest text-sm uppercase items-center gap-2">
             <SlidersHorizontal className="w-4 h-4" /> Operator Console
           </span>
-          <span className="px-2 py-0.5 rounded-full bg-[var(--dj-cyan)]/20 border border-[var(--dj-cyan)] text-[var(--dj-cyan)] font-mono text-[11px] font-bold">
-            {APP_VERSION}
-          </span>
+          {isDev ? (
+            <span className="px-2.5 py-0.5 rounded-full bg-orange-500 text-white font-mono text-[11px] font-extrabold tracking-wider shadow-md animate-pulse">
+              {APP_DEV_VERSION}
+            </span>
+          ) : (
+            <span className="px-2 py-0.5 rounded-full bg-[var(--dj-cyan)]/20 border border-[var(--dj-cyan)] text-[var(--dj-cyan)] font-mono text-[11px] font-bold">
+              {APP_PROD_VERSION}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-4">

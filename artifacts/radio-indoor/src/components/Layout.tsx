@@ -3,13 +3,16 @@ import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, Users, Monitor, Music, ListMusic, BarChart2, LogOut, Radio, Menu, X,
 } from "lucide-react";
-import { useAdminLogout } from "@workspace/api-client-react";
+import { useAdminLogout, isDevEnvironment } from "@workspace/api-client-react";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 
-export const APP_VERSION = "V32";
+export const APP_PROD_VERSION = "V32";
+export const APP_DEV_VERSION = "Dev-V10";
+export const isDev = isDevEnvironment();
+export const APP_VERSION = isDev ? APP_DEV_VERSION : APP_PROD_VERSION;
 
 const NAV_ITEMS = [
   { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
@@ -48,12 +51,22 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-sidebar-foreground tracking-tight">Radio Indoor</p>
-            <span
-              data-testid="badge-version"
-              className="px-2 py-0.5 rounded-full bg-primary text-primary-foreground font-mono text-[11px] font-bold tracking-wide shadow-sm"
-            >
-              {APP_VERSION}
-            </span>
+            {isDev ? (
+              <span
+                data-testid="badge-version"
+                className="px-2.5 py-0.5 rounded-full bg-orange-500 hover:bg-orange-600 text-white font-mono text-[11px] font-extrabold tracking-wider shadow-md animate-pulse"
+                title="Ambiente de Desenvolvimento (DEV)"
+              >
+                {APP_DEV_VERSION}
+              </span>
+            ) : (
+              <span
+                data-testid="badge-version"
+                className="px-2 py-0.5 rounded-full bg-primary text-primary-foreground font-mono text-[11px] font-bold tracking-wide shadow-sm"
+              >
+                {APP_PROD_VERSION}
+              </span>
+            )}
           </div>
           <p className="text-[10px] text-sidebar-foreground/50 uppercase tracking-widest">Painel Admin</p>
         </div>

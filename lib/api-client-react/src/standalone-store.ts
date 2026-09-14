@@ -3,7 +3,7 @@
  * Provides multi-device real-time cloud synchronization for admins, clients, playlists, audio media blobs, and logs.
  */
 
-import { firestore, storage } from "./firebase-config";
+import { firestore, storage, isDevEnvironment } from "./firebase-config";
 import {
   collection,
   doc,
@@ -21,7 +21,8 @@ import {
   deleteObject,
 } from "firebase/storage";
 
-const DB_NAME = "radio_indoor_db";
+const isDev = isDevEnvironment();
+const DB_NAME = isDev ? "radio_indoor_dev_db" : "radio_indoor_db";
 const DB_VERSION = 3;
 
 export interface DBAdmin {
@@ -171,12 +172,12 @@ export function openDB(): Promise<IDBDatabase> {
 // ── Local IndexedDB operations (Cache layer) ──
 function getLocalAll<T>(storeName: string): Promise<T[]> {
   return openDB().then((db) => {
-    return new Promise((resolve) => {
+    return new Promise<T[]>((resolve) => {
       try {
         const tx = db.transaction(storeName, "readonly");
         const store = tx.objectStore(storeName);
         const req = store.getAll();
-        req.onsuccess = () => resolve(req.result || []);
+        req.onsuccess = () => resolve((req.result as T[]) || []);
         req.onerror = () => resolve([]);
       } catch {
         resolve([]);
@@ -187,7 +188,7 @@ function getLocalAll<T>(storeName: string): Promise<T[]> {
 
 function putLocal<T>(storeName: string, item: T): Promise<void> {
   return openDB().then((db) => {
-    return new Promise((resolve) => {
+    return new Promise<void>((resolve) => {
       try {
         const tx = db.transaction(storeName, "readwrite");
         const store = tx.objectStore(storeName);
@@ -376,7 +377,7 @@ export async function remove(storeName: string, id: number): Promise<void> {
 }
 
 // Session management
-const SESSION_KEY = "radio_indoor_standalone_session";
+const SESSION_KEY = isDev ? "radio_indoor_dev_session" : "radio_indoor_standalone_session";
 
 export function getSessionUser(): { id: number; email: string; name: string; role: string } | null {
   try {
