@@ -1520,23 +1520,39 @@ export async function handleStandaloneRequest(
         // Upload directly to Google Cloud Storage for global streaming
         try {
           const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-          const fileRef = storageRef(storage, `media/${clientId}/${Date.now()}_${safeName}`);
-          await uploadBytes(fileRef, file);
+          const devPrefix = isDev ? "dev/" : "";
+          const fileRef = storageRef(storage, `media/${devPrefix}${clientId}/${Date.now()}_${safeName}`);
+
+          const uploadTask = uploadBytesResumable(fileRef, file);
+          await new Promise<void>((resolve, reject) => {
+            uploadTask.on(
+              "state_changed",
+              (snapshot) => {
+                if (snapshot.totalBytes > 0 && onProgress) {
+                  const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+                  onProgress(Math.max(15, Math.min(95, pct)));
+                }
+              },
+              (err) => reject(err),
+              () => resolve()
+            );
+          });
+
           const downloadUrl = await getDownloadURL(fileRef);
           if (downloadUrl) {
             cloudUrl = downloadUrl;
           }
         } catch (storageErr) {
-          console.warn("[Storage] uploadBytes error:", storageErr);
+          console.warn("[Storage] uploadBytesResumable error:", storageErr);
         }
 
-        if (onProgress) onProgress(85);
+        if (onProgress) onProgress(95);
 
         const id = await insert("media", { ...newMedia, url: cloudUrl });
         if (blob) inMemoryMediaBlobs.set(id, blob);
 
-        // Also save Firestore chunks as backup if cloudUrl wasn't created
-        if (!cloudUrl) {
+        // Only attempt Firestore chunking for small files if cloud storage completely failed
+        if (!cloudUrl && file.size < 2 * 1024 * 1024) {
           try {
             chunkCount = await saveMediaChunksToFirestore(id, file);
             if (chunkCount > 0) {

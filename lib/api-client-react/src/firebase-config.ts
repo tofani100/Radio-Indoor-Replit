@@ -14,7 +14,7 @@ export const prodFirebaseConfig = {
 export const devFirebaseConfig = {
   projectId: "radio-indoor-dev",
   appId: "1:653163372318:web:319e99a7e15ea4e1a1330f",
-  storageBucket: "radio-indoor-dev.firebasestorage.app",
+  storageBucket: "radio-indoor-replit.firebasestorage.app",
   apiKey: "AIzaSyD9VWMhY1YSXezGrZiTzBl33pibu3KZw9k",
   authDomain: "radio-indoor-dev-92858.firebaseapp.com",
   messagingSenderId: "653163372318",
@@ -47,6 +47,6 @@ export const isDev = isDevEnvironment();
 export const firebaseConfig = isDev ? devFirebaseConfig : prodFirebaseConfig;
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const firestore = getFirestore(app);
-export const storage = getStorage(app);
+export const storage = getStorage(app, "gs://radio-indoor-replit.firebasestorage.app");
 
 
