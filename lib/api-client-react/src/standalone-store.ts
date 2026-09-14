@@ -1515,8 +1515,6 @@ export async function handleStandaloneRequest(
           chunkCount: 0,
         };
 
-        if (onProgress) onProgress(60);
-
         // Upload directly to Google Cloud Storage for global streaming
         try {
           const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
