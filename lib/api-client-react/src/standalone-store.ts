@@ -995,7 +995,7 @@ export async function handleStandaloneRequest(
         deviceId: 1,
         playlistId: activePlaylist.id,
         currentIndex: 0,
-        playbackMode: targetClient.playbackMode || "sequential",
+        playbackMode: (activePlaylist?.playbackMode === "shuffle" || targetClient.playbackMode === "shuffle") ? "shuffle" : "sequential",
         jingleMode: targetClient.jingleMode || "interval",
         jingleInterval: targetClient.jingleInterval || 3,
         jingleCount: targetClient.jingleCount ?? 1,

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Radio, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, AlertCircle,
   Clock, Music, Activity, Headphones, Hash, Mic2, SlidersHorizontal,
-  Download, Share, CheckCircle2, X, ListMusic, ChevronDown, ArrowLeftRight,
+  Download, Share, CheckCircle2, X, ListMusic, ChevronDown, ArrowLeftRight, Shuffle,
 } from "lucide-react";
 import {
   useRegisterDevice, useGetPlaybackQueue, getGetPlaybackQueueQueryKey,
@@ -13,6 +13,15 @@ import logoSrc from "@assets/LOGO_1777766957414.png";
 import { usePwaInstall } from "@/hooks/usePwaInstall";
 import { APP_VERSION, isDev, APP_DEV_VERSION, APP_PROD_VERSION } from "@/components/Layout";
 import "@/styles/dj-console.css";
+
+function shuffleArray<T>(array: T[]): T[] {
+  const arr = [...array];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j]!, arr[i]!];
+  }
+  return arr;
+}
 
 function getOrCreateUUID(): string {
   let uuid = localStorage.getItem("radio_indoor_uuid");
@@ -84,6 +93,8 @@ export default function PlayerPage() {
   });
   const [muted, setMuted] = useState(false);
   const [started, setStarted] = useState(false);
+  const [shuffleCycle, setShuffleCycle] = useState(0);
+  const [shuffleOverride, setShuffleOverride] = useState<boolean | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [iosHintOpen, setIosHintOpen] = useState(false);
@@ -224,6 +235,8 @@ export default function PlayerPage() {
   //   by a timer (jingleIntervalSeconds) and fire as overlays via currentJingle.
   // Also applies shuffle when client is set to "shuffle" mode.
   type QueueItem = NonNullable<typeof queue>["items"][number];
+  const effectivePlaybackMode = shuffleOverride !== null ? (shuffleOverride ? "shuffle" : "sequential") : (queue?.playbackMode ?? "sequential");
+
   const scheduledItems = useMemo<QueueItem[]>(() => {
     const items = queue?.items ?? [];
     if (items.length === 0) return [];
@@ -231,18 +244,19 @@ export default function PlayerPage() {
     const interval = Math.max(1, queue?.jingleInterval ?? 3);
     const jingleCount = Math.max(0, (queue as any)?.jingleCount ?? 1);
     const voiceoverCount = Math.max(0, (queue as any)?.voiceoverCount ?? 1);
+    const isShuffle = effectivePlaybackMode === "shuffle";
 
     if (mode === "ordered") {
-      if (queue?.playbackMode === "shuffle") {
-        return [...items].sort(() => Math.random() - 0.5);
+      if (isShuffle) {
+        return shuffleArray(items);
       }
       return items;
     }
     if (mode === "time") {
       // Music-only schedule; jingles/voiceovers fire via timer interrupt.
       let musics = items.filter((i) => i.type === "music");
-      if (queue?.playbackMode === "shuffle") {
-        musics = [...musics].sort(() => Math.random() - 0.5);
+      if (isShuffle) {
+        musics = shuffleArray(musics);
       }
       // Fallback: if cliente só tem vinhetas/locuções cadastradas, toca elas mesmo.
       if (musics.length === 0) return items.filter((i) => i.type === "jingle" || i.type === "voiceover");
@@ -254,8 +268,8 @@ export default function PlayerPage() {
     const jingles = items.filter((i) => i.type === "jingle");
     const voiceovers = items.filter((i) => i.type === "voiceover");
 
-    if (queue?.playbackMode === "shuffle") {
-      musics = [...musics].sort(() => Math.random() - 0.5);
+    if (isShuffle) {
+      musics = shuffleArray(musics);
     }
 
     // If no musics exist, output all available jingles and voiceovers
@@ -275,14 +289,14 @@ export default function PlayerPage() {
     musics.forEach((m, i) => {
       out.push(m);
       if ((i + 1) % interval === 0) {
-        // Append jingles if available and count > 0
+        // Append jingles in STRICT playlist drag-and-drop order
         if (jingles.length > 0 && jingleCount > 0) {
           for (let c = 0; c < jingleCount; c++) {
             out.push(jingles[jIdx % jingles.length]!);
             jIdx++;
           }
         }
-        // Append voiceovers if available and count > 0
+        // Append voiceovers in STRICT playlist drag-and-drop order
         if (voiceovers.length > 0 && voiceoverCount > 0) {
           for (let c = 0; c < voiceoverCount; c++) {
             out.push(voiceovers[vIdx % voiceovers.length]!);
@@ -293,7 +307,7 @@ export default function PlayerPage() {
     });
 
     return out;
-  }, [queue?.items, queue?.jingleMode, queue?.jingleInterval, (queue as any)?.jingleCount, (queue as any)?.voiceoverCount, queue?.playbackMode]);
+  }, [queue?.items, queue?.jingleMode, queue?.jingleInterval, (queue as any)?.jingleCount, (queue as any)?.voiceoverCount, effectivePlaybackMode, shuffleCycle]);
 
   // Pool of jingles/voiceovers available for time-mode interruption
   const jinglesPool = useMemo<QueueItem[]>(() => {
@@ -385,6 +399,9 @@ export default function PlayerPage() {
     audio.onended = () => {
       logPlayback.mutate({ data: { mediaId: track.id, uuid, email } });
       const next = (idx + 1) % items.length;
+      if (next === 0 && effectivePlaybackMode === "shuffle") {
+        setShuffleCycle((c) => c + 1);
+      }
       setCurrentIdx(next);
       playTrack(next);
     };
@@ -905,7 +922,33 @@ export default function PlayerPage() {
           )}
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 sm:gap-4">
+          {/* Botão de Alternância de Modo (Aleatório / Sequencial) */}
+          <button
+            data-testid="button-toggle-shuffle"
+            type="button"
+            onClick={() => {
+              const nextMode = effectivePlaybackMode === "shuffle" ? false : true;
+              setShuffleOverride(nextMode);
+              setShuffleCycle((c) => c + 1);
+            }}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-[10px] uppercase font-bold tracking-widest transition-all cursor-pointer ${
+              effectivePlaybackMode === "shuffle"
+                ? "border-[var(--dj-cyan)] bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] shadow-[0_0_10px_rgba(0,240,255,0.25)]"
+                : "border-[var(--dj-border)] text-[var(--dj-muted)] hover:text-[var(--dj-text)] hover:border-[var(--dj-text)]/40"
+            }`}
+            title={
+              effectivePlaybackMode === "shuffle"
+                ? "Modo Aleatório ativado: Músicas embaralhadas a cada ciclo. Jingles e locuções tocam na ordem exata da playlist."
+                : "Modo Sequencial ativado: Faixas tocam na ordem da playlist. Clique para alternar para Aleatório."
+            }
+          >
+            <Shuffle className="w-3.5 h-3.5 flex-none" />
+            <span className="hidden sm:inline">
+              {effectivePlaybackMode === "shuffle" ? "Aleatório" : "Sequencial"}
+            </span>
+          </button>
+
           {/* Playlist switcher — exibido para permitir a troca entre todas as playlists do cliente */}
           {(availablePlaylists?.length ?? 0) > 0 && (
             <div className="relative">
