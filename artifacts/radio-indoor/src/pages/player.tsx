@@ -81,15 +81,15 @@ export default function PlayerPage() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [masterVolume, setMasterVolume] = useState(() => {
     const v = parseFloat(localStorage.getItem("radio_indoor_volume") ?? "");
-    return Number.isFinite(v) ? v : 0.7;
+    return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1.0;
   });
   const [musicMix, setMusicMix] = useState(() => {
     const v = parseFloat(localStorage.getItem("radio_indoor_music_mix") ?? "");
-    return Number.isFinite(v) ? v : 1;
+    return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1.0;
   });
   const [jingleMix, setJingleMix] = useState(() => {
     const v = parseFloat(localStorage.getItem("radio_indoor_jingle_mix") ?? "");
-    return Number.isFinite(v) ? v : 1;
+    return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1.0;
   });
   const [muted, setMuted] = useState(false);
   const [started, setStarted] = useState(false);
@@ -139,11 +139,20 @@ export default function PlayerPage() {
     }
   };
 
+  const isVoiceTrack = (type: string | undefined): boolean => {
+    if (!type) return false;
+    const t = type.trim().toLowerCase();
+    return t === "jingle" || t === "voiceover" || t === "locucao" || t === "locução";
+  };
+
   // Effective volume for the currently playing track =
-  // master * (music or jingle mix), depending on track type.
+  // master * (music or voice/jingle mix), depending on track type.
   const effectiveVolume = (trackType: string | undefined) => {
-    const mix = trackType === "jingle" ? jingleMix : musicMix;
-    return Math.max(0, Math.min(1, masterVolume * mix));
+    if (muted) return 0;
+    const isVoice = isVoiceTrack(trackType);
+    const channelMix = isVoice ? jingleMix : musicMix;
+    if (channelMix <= 0.001 || masterVolume <= 0.001) return 0;
+    return Math.max(0, Math.min(1, masterVolume * channelMix));
   };
 
   const register = useRegisterDevice();
@@ -314,28 +323,49 @@ export default function PlayerPage() {
     return (queue?.items ?? []).filter((i) => i.type === "jingle" || i.type === "voiceover");
   }, [queue?.items]);
 
-  // Heartbeat every 3 minutes
+  // Heartbeat every 30 seconds to maintain reliable presence and avoid duplicate session conflicts
   useEffect(() => {
-    if (playerState !== "active") return;
+    if (playerState !== "active" || !email) return;
+    heartbeat.mutate({ data: { uuid, email } });
     const id = setInterval(() => {
-      heartbeat.mutate({ data: { uuid, email } });
-    }, 3 * 60 * 1000);
+      heartbeat.mutate(
+        { data: { uuid, email } },
+        {
+          onSuccess: (res: any) => {
+            if (res?.status === "duplicate") {
+              setPlayerState("duplicate");
+              if (audioRef.current) {
+                try { audioRef.current.pause(); } catch {}
+              }
+              setIsPlaying(false);
+            } else if (res?.status === "blocked") {
+              setPlayerState("blocked");
+              if (audioRef.current) {
+                try { audioRef.current.pause(); } catch {}
+              }
+              setIsPlaying(false);
+            }
+          },
+        }
+      );
+    }, 30 * 1000);
     return () => clearInterval(id);
-  }, [playerState, email]);
+  }, [playerState, email, uuid]);
 
   // Apply volume/mute to the live <audio> element whenever they change.
   useEffect(() => {
     const a = audioRef.current;
     if (a) {
-      const trackType = scheduledItems[currentIdx]?.type;
-      a.volume = effectiveVolume(trackType);
-      a.muted = muted;
+      const currentTrack = currentJingle ?? scheduledItems[currentIdx];
+      const vol = effectiveVolume(currentTrack?.type);
+      a.volume = vol;
+      a.muted = muted || vol <= 0.001;
     }
     localStorage.setItem("radio_indoor_volume", String(masterVolume));
     localStorage.setItem("radio_indoor_music_mix", String(musicMix));
     localStorage.setItem("radio_indoor_jingle_mix", String(jingleMix));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [masterVolume, musicMix, jingleMix, muted, currentIdx]);
+  }, [masterVolume, musicMix, jingleMix, muted, currentIdx, currentJingle]);
 
   const handleStart = () => {
     setStarted(true);
@@ -372,8 +402,9 @@ export default function PlayerPage() {
     resumeMusicIdxRef.current = null;
 
     const audio = new Audio(track.url);
-    audio.volume = effectiveVolume(track.type);
-    audio.muted = muted;
+    const vol = effectiveVolume(track.type);
+    audio.volume = vol;
+    audio.muted = muted || vol <= 0.001;
     audioRef.current = audio;
     setCurrentTime(resumeAt);
     setDuration(0);
@@ -472,8 +503,9 @@ export default function PlayerPage() {
     });
 
     const audio = new Audio(jingle.url);
-    audio.volume = effectiveVolume("jingle");
-    audio.muted = muted;
+    const vol = effectiveVolume(jingle.type || "voiceover");
+    audio.volume = vol;
+    audio.muted = muted || vol <= 0.001;
     audioRef.current = audio;
     setCurrentTime(0);
     setDuration(0);
@@ -858,9 +890,11 @@ export default function PlayerPage() {
   };
 
   const getDbLevel = (val: number) => {
-    if (val === 0) return "-∞ dB";
+    if (val <= 0.001) return "-∞ dB (0%)";
+    const percent = Math.round(val * 100);
     const db = 20 * Math.log10(val);
-    return db > 0 ? `+${db.toFixed(1)} dB` : `${db.toFixed(1)} dB`;
+    const dbStr = db >= -0.05 ? "0.0 dB" : `${db.toFixed(1)} dB`;
+    return `${dbStr} (${percent}%)`;
   };
 
   const jumpTo = (idx: number) => {
@@ -1405,7 +1439,7 @@ export default function PlayerPage() {
                 <span className="flex-none" style={{ color }}>{icon}</span>
                 <span className="text-[9px] uppercase tracking-widest font-bold w-12 flex-none" style={{ color }}>{label}</span>
                 <input data-testid={testId} type="range" min={0} max={1} step={0.01} value={value} onChange={(e) => onChange(parseFloat(e.target.value))} aria-label={label} className={`dj-progress flex-1 ${cls}`} />
-                <span className="text-[9px] dj-mono text-[var(--dj-muted)] flex-none w-10 text-right">{getDbLevel(value)}</span>
+                <span className="text-[9px] dj-mono text-[var(--dj-muted)] flex-none w-24 text-right">{getDbLevel(value)}</span>
               </div>
             ))}
           </div>
@@ -1417,8 +1451,10 @@ export default function PlayerPage() {
               <div className="flex-1 flex gap-[2px] h-3">
                 {Array.from({ length: 40 }).map((_, i) => {
                   const threshold = i / 40;
-                  const dynamic = isPlaying && !muted
-                    ? displayVolume * (0.55 + ((Math.sin(Date.now() / 200 + i + (channel === "L" ? 0 : 1.7)) + 1) / 2) * 0.45)
+                  const currentTrack = currentJingle ?? scheduledItems[currentIdx];
+                  const effVol = effectiveVolume(currentTrack?.type);
+                  const dynamic = isPlaying && !muted && effVol > 0.001
+                    ? effVol * (0.55 + ((Math.sin(Date.now() / 200 + i + (channel === "L" ? 0 : 1.7)) + 1) / 2) * 0.45)
                     : 0;
                   const active = threshold < dynamic;
                   const isPeak = threshold > 0.8;

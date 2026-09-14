@@ -91,7 +91,7 @@ export interface DBDevice {
   pairingCode: string;
   uuid?: string;
   email?: string;
-  status: "active" | "pending" | "blocked";
+  status: "active" | "pending" | "blocked" | "duplicate";
   lastSeen: string;
   ipAddress?: string;
   userAgent?: string;
@@ -820,7 +820,7 @@ export async function handleStandaloneRequest(
 
         // Check if there is another ACTIVE station/browser session for this non-master email
         if (!isMasterEmail) {
-          const ACTIVE_SESSION_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes window of active heartbeat/seen
+          const ACTIVE_SESSION_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes window matching production isOnline()
           const conflictingDev = allDevs.find((d) => {
             if (!d.email || d.email.toLowerCase() !== email) return false;
             if (uuid && d.uuid === uuid) return false; // same browser tab/device instance
@@ -843,13 +843,13 @@ export async function handleStandaloneRequest(
           }
         }
 
-        let existingDev = allDevs.find((d) => (uuid && d.uuid === uuid) || (d.email && d.email.toLowerCase() === email));
+        // Must look up existing device strictly by UUID (each physical browser/tab has its unique UUID)
+        let existingDev = allDevs.find((d) => uuid && d.uuid === uuid);
         if (existingDev) {
           devId = existingDev.id;
           existingDev.lastSeen = nowIso;
           existingDev.clientId = authorizedClient.id;
           existingDev.email = email;
-          if (uuid) existingDev.uuid = uuid;
           existingDev.status = "active";
           await update("devices", existingDev);
         } else {
@@ -1096,13 +1096,41 @@ export async function handleStandaloneRequest(
     const uuid = (body?.uuid || "").trim();
     if (email || uuid) {
       const allDevs = await getAll<DBDevice>("devices");
-      let dev = allDevs.find((d) => (uuid && d.uuid === uuid) || (email && d.email && d.email.toLowerCase() === email));
+      // Match strictly by uuid for this physical browser instance
+      let dev = allDevs.find((d) => uuid && d.uuid === uuid);
       const nowIso = new Date().toISOString();
+      const nowMs = Date.now();
+
       if (dev) {
+        if (dev.status === "blocked") {
+          return { status: 200, data: { status: "blocked", success: false, message: "Dispositivo bloqueado" } };
+        }
+
+        // Check if another terminal logged in with the same email in the meantime (and not tofani100@gmail.com)
+        if (email && email !== "tofani100@gmail.com") {
+          const otherDev = allDevs.find(
+            (d) => d.email && d.email.toLowerCase() === email && d.uuid !== uuid && d.status === "active" &&
+                   d.lastSeen && (nowMs - new Date(d.lastSeen).getTime() < 5 * 60 * 1000) &&
+                   new Date(d.lastSeen).getTime() > new Date(dev!.lastSeen || 0).getTime()
+          );
+          if (otherDev) {
+            dev.status = "duplicate";
+            await update("devices", dev);
+            return {
+              status: 200,
+              data: {
+                status: "duplicate",
+                success: false,
+                message: `Este e-mail (${email}) foi conectado em outra estação.`,
+              },
+            };
+          }
+        }
+
         dev.lastSeen = nowIso;
         if (email) dev.email = email;
-        if (uuid) dev.uuid = uuid;
         await update("devices", dev);
+        return { status: 200, data: { status: dev.status, success: true } };
       } else if (email) {
         const clients = await getAll<DBClient>("clients");
         const matchClient = clients.find((c) =>
@@ -1121,6 +1149,7 @@ export async function handleStandaloneRequest(
           createdAt: nowIso,
         };
         await insert("devices", newDev);
+        return { status: 200, data: { status: "active", success: true } };
       }
     }
     return { status: 200, data: { status: "active", success: true } };

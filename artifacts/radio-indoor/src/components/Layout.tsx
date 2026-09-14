@@ -10,7 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 
 export const APP_PROD_VERSION = "V32";
-export const APP_DEV_VERSION = "Dev-V33";
+export const APP_DEV_VERSION = "Dev-V34";
 export const isDev = isDevEnvironment();
 export const APP_VERSION = isDev ? APP_DEV_VERSION : APP_PROD_VERSION;
 
