@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
-import { Plus, ChevronRight, Trash2, ListMusic, Pencil } from "lucide-react";
+import { Plus, ChevronRight, Trash2, ListMusic, Pencil, Globe, Building2 } from "lucide-react";
 import {
   useListPlaylists, getListPlaylistsQueryKey,
   useCreatePlaylist, useDeletePlaylist, useUpdatePlaylist,
@@ -117,11 +117,11 @@ export default function PlaylistsPage() {
 
   return (
     <div className="p-4 sm:p-8 max-w-5xl">
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Playlists</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {clientFilter === "global" ? "Acervo Geral de Playlists (Globais)" : "Playlists Exclusivas do Cliente"} · {playlists?.length ?? 0} playlists
+            {clientFilter === "global" ? "Acervo Geral de Playlists (Músicas Globais)" : "Playlists Exclusivas do Cliente"} · {playlists?.length ?? 0} playlists
           </p>
         </div>
         <Button
@@ -134,23 +134,26 @@ export default function PlaylistsPage() {
             }));
             setCreateOpen(true);
           }}
+          className={clientFilter === "global" ? "bg-purple-600 hover:bg-purple-700 text-white" : ""}
         >
-          <Plus className="w-4 h-4 mr-2" /> Nova Playlist
+          <Plus className="w-4 h-4 mr-2" />
+          {clientFilter === "global" ? "Criar Playlist no Acervo Geral" : "Nova Playlist para Cliente"}
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 mb-6">
+      {/* Tabs de Filtro */}
+      <div className="flex flex-wrap items-center gap-3 mb-4">
         <div className="flex items-center gap-1.5 p-1 bg-muted/50 rounded-lg border border-border">
           <button
             type="button"
             onClick={() => setClientFilter("global")}
-            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+            className={`px-3.5 py-1.5 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer ${
               clientFilter === "global"
-                ? "bg-primary text-primary-foreground shadow-sm"
+                ? "bg-purple-600 text-white shadow-sm"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            🌐 Acervo Geral (Globais)
+            <Globe className="w-3.5 h-3.5" /> Acervo Geral (Globais)
           </button>
           <button
             type="button"
@@ -159,13 +162,13 @@ export default function PlaylistsPage() {
                 setClientFilter(String(clients[0]!.id));
               }
             }}
-            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+            className={`px-3.5 py-1.5 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer ${
               clientFilter !== "global"
                 ? "bg-primary text-primary-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            🏢 Por Cliente
+            <Building2 className="w-3.5 h-3.5" /> Por Cliente
           </button>
         </div>
 
@@ -182,6 +185,41 @@ export default function PlaylistsPage() {
           </Select>
         )}
       </div>
+
+      {/* Banner Informativo Explicando o Funcionamento */}
+      {clientFilter === "global" ? (
+        <div className="mb-6 p-4 rounded-xl border border-purple-500/30 bg-purple-500/10 flex items-start gap-3">
+          <div className="p-2 rounded-lg bg-purple-500/20 text-purple-600 dark:text-purple-400 flex-none mt-0.5">
+            <Globe className="w-5 h-5" />
+          </div>
+          <div className="text-xs space-y-1">
+            <h3 className="font-semibold text-foreground text-sm flex items-center gap-2">
+              🌐 O que é o Acervo Geral?
+            </h3>
+            <p className="text-muted-foreground leading-relaxed">
+              Aqui você cadastra as <strong>playlists musicais mestras</strong> da sua rádio (ex: <em>Pop Hits, Sertanejo Sucessos, MPB Acústico, Lounge Bar, Rock Clássico</em>).
+              Todas as playlists criadas nesta aba ficam <strong>automaticamente disponíveis para todos os seus clientes escolherem no Player</strong> de acordo com o plano contratado (Standard ou Master).
+            </p>
+            <p className="text-purple-700 dark:text-purple-300 font-medium">
+              💡 <strong>Privacidade Comercial Garantida:</strong> Quando um cliente seleciona uma playlist do Acervo Geral, as músicas tocam e o sistema <strong>injeta de forma automática e intercalada apenas as vinhetas e locuções exclusivas da loja dele</strong>!
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="mb-6 p-4 rounded-xl border border-blue-500/20 bg-blue-500/5 flex items-start gap-3">
+          <div className="p-2 rounded-lg bg-blue-500/10 text-blue-600 flex-none mt-0.5">
+            <Building2 className="w-5 h-5" />
+          </div>
+          <div className="text-xs space-y-1">
+            <h3 className="font-semibold text-foreground text-sm flex items-center gap-2">
+              🏢 Playlists Exclusivas do Cliente
+            </h3>
+            <p className="text-muted-foreground leading-relaxed">
+              Playlists personalizadas criadas especificamente para este cliente ou para filiais específicas da empresa dele.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-3">
         {isLoading && [...Array(3)].map((_, i) => <div key={i} className="bg-card border border-card-border rounded-xl h-20 animate-pulse" />)}

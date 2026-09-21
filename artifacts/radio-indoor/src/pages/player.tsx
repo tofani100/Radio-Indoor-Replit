@@ -13,6 +13,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import logoSrc from "@assets/LOGO_1777766957414.png";
 import { usePwaInstall } from "@/hooks/usePwaInstall";
 import { APP_VERSION, isDev, APP_DEV_VERSION, APP_PROD_VERSION } from "@/components/Layout";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import "@/styles/dj-console.css";
 
 function shuffleArray<T>(array: T[]): T[] {
@@ -78,6 +79,7 @@ export default function PlayerPage() {
     return getStoredPlaylistIdForEmail(storedEmail) ?? getStoredPlaylistId(uuid);
   });
   const [playlistDropdownOpen, setPlaylistDropdownOpen] = useState(false);
+  const [playlistModalOpen, setPlaylistModalOpen] = useState(false);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [masterVolume, setMasterVolume] = useState(() => {
@@ -988,111 +990,29 @@ export default function PlayerPage() {
           </button>
 
           {/* Playlist switcher — exibido para permitir a troca entre todas as playlists do cliente */}
-          {(availablePlaylists?.length ?? 0) > 0 && (() => {
-            const all = (availablePlaylists as any[]) || [];
-            const exclusivePlaylists = all.filter((p) => !p.isGlobal);
-            const globalPlaylists = all.filter((p) => !!p.isGlobal);
-
-            return (
-              <div className="relative">
-                <button
-                  data-testid="button-playlist-switcher"
-                  type="button"
-                  onClick={() => setPlaylistDropdownOpen((o) => !o)}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded border text-[10px] uppercase font-bold tracking-widest transition-colors cursor-pointer ${
-                    isCurrentPlaylistGlobal
-                      ? "border-emerald-500 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-[#060a14]"
-                      : "border-[var(--dj-cyan)] bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] hover:bg-[var(--dj-cyan)] hover:text-[#060a14]"
-                  }`}
-                  title="Trocar de playlist"
-                >
-                  {isCurrentPlaylistGlobal ? (
-                    <Globe className="w-3.5 h-3.5 flex-none text-emerald-400" />
-                  ) : (
-                    <ListMusic className="w-3.5 h-3.5 flex-none" />
-                  )}
-                  <span className="hidden sm:inline truncate max-w-[140px]">
-                    {currentPlaylistName ?? "Playlist"}
-                  </span>
-                  <ChevronDown className={`w-3.5 h-3.5 flex-none transition-transform ${playlistDropdownOpen ? "rotate-180" : ""}`} />
-                </button>
-
-                {playlistDropdownOpen && (
-                  <>
-                    {/* Backdrop to close dropdown */}
-                    <div
-                      className="fixed inset-0 z-40"
-                      onClick={() => setPlaylistDropdownOpen(false)}
-                    />
-                    <div className="absolute right-0 top-full mt-2 z-50 min-w-[260px] max-w-[340px] max-h-[420px] overflow-y-auto bg-[var(--dj-panel)] border border-[var(--dj-border)] rounded-lg shadow-2xl">
-                      <div className="px-3 py-2 border-b border-[var(--dj-border)] bg-black/20 flex items-center justify-between">
-                        <p className="text-[9px] uppercase tracking-widest text-[var(--dj-muted)] font-bold">Selecionar Playlist</p>
-                        <span className="text-[9px] text-[var(--dj-muted)] font-mono">{all.length} disponíveis</span>
-                      </div>
-
-                      {exclusivePlaylists.length > 0 && (
-                        <div>
-                          <div className="px-3 py-1.5 bg-[var(--dj-cyan)]/10 border-b border-[var(--dj-border)] flex items-center justify-between">
-                            <span className="text-[9px] uppercase font-bold tracking-wider text-[var(--dj-cyan)] flex items-center gap-1.5">
-                              <Building2 className="w-3 h-3" /> Playlists da Loja
-                            </span>
-                            <span className="text-[8px] text-[var(--dj-cyan)]/70 font-mono">{exclusivePlaylists.length}</span>
-                          </div>
-                          {exclusivePlaylists.map((pl) => (
-                            <button
-                              key={pl.id}
-                              type="button"
-                              data-testid={`playlist-option-${pl.id}`}
-                              onClick={() => handlePlaylistSwitch(pl.id)}
-                              className={`w-full text-left px-4 py-2.5 text-xs flex items-center justify-between gap-3 transition-colors border-b border-[var(--dj-border)]/30 ${
-                                pl.id === selectedPlaylistId
-                                  ? "bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] font-semibold"
-                                  : "text-[var(--dj-text)] hover:bg-[var(--dj-accent)]"
-                              }`}
-                            >
-                              <div className="truncate flex-1">
-                                <p className="truncate">{pl.name}</p>
-                              </div>
-                              <span className="text-[10px] text-[var(--dj-muted)] font-mono flex-none">{pl.itemCount} faixas</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-
-                      {globalPlaylists.length > 0 && (
-                        <div>
-                          <div className="px-3 py-1.5 bg-emerald-500/10 border-b border-emerald-500/20 flex items-center justify-between">
-                            <span className="text-[9px] uppercase font-bold tracking-wider text-emerald-400 flex items-center gap-1.5">
-                              <Globe className="w-3 h-3" /> Acervo Geral (Seu Plano)
-                            </span>
-                            <span className="text-[8px] text-emerald-400/70 font-mono">{globalPlaylists.length}</span>
-                          </div>
-                          {globalPlaylists.map((pl) => (
-                            <button
-                              key={pl.id}
-                              type="button"
-                              data-testid={`playlist-option-${pl.id}`}
-                              onClick={() => handlePlaylistSwitch(pl.id)}
-                              className={`w-full text-left px-4 py-2.5 text-xs flex items-center justify-between gap-3 transition-colors border-b border-[var(--dj-border)]/30 ${
-                                pl.id === selectedPlaylistId
-                                  ? "bg-emerald-500/15 text-emerald-300 font-semibold"
-                                  : "text-[var(--dj-text)] hover:bg-[var(--dj-accent)]"
-                              }`}
-                            >
-                              <div className="truncate flex-1">
-                                <p className="truncate">{pl.name}</p>
-                              </div>
-                              <span className="text-[10px] text-[var(--dj-muted)] font-mono flex-none">{pl.itemCount} faixas</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-            );
-          })()}
+          {(availablePlaylists?.length ?? 0) > 0 && (
+            <button
+              data-testid="button-playlist-switcher"
+              type="button"
+              onClick={() => setPlaylistModalOpen(true)}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded border text-[11px] font-bold tracking-wider transition-all cursor-pointer shadow-sm ${
+                isCurrentPlaylistGlobal
+                  ? "border-emerald-500 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500 hover:text-[#060a14]"
+                  : "border-[var(--dj-cyan)] bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] hover:bg-[var(--dj-cyan)] hover:text-[#060a14]"
+              }`}
+              title="Clique para escolher outra playlist"
+            >
+              {isCurrentPlaylistGlobal ? (
+                <Globe className="w-3.5 h-3.5 flex-none text-emerald-400" />
+              ) : (
+                <ListMusic className="w-3.5 h-3.5 flex-none" />
+              )}
+              <span className="truncate max-w-[150px]">
+                {currentPlaylistName ?? "Playlist"}
+              </span>
+              <span className="text-[9px] uppercase tracking-widest opacity-80 ml-0.5 font-mono">▼ Trocar</span>
+            </button>
+          )}
 
           <div className="hidden md:flex items-center gap-2 text-xs font-semibold">
             <Radio className="w-4 h-4 text-[var(--dj-cyan)]" />
@@ -1390,7 +1310,35 @@ export default function PlayerPage() {
 
         {/* Center: Queue */}
         <div className="lg:w-1/3 bg-[var(--dj-panel)] border border-[var(--dj-border)] rounded-lg shadow-lg flex flex-col overflow-hidden lg:min-h-0 max-h-64 sm:max-h-80 lg:max-h-none">
-          <div className="px-3 py-2 lg:px-5 lg:py-4 border-b border-[var(--dj-border)] flex items-center justify-between bg-[var(--dj-bg)]/50 flex-none">
+          {/* Barra de Playlist em Destaque no Topo da Fila */}
+          <div className="px-3 py-2 sm:px-4 sm:py-2.5 border-b border-[var(--dj-border)] bg-[var(--dj-bg)]/80 flex items-center justify-between gap-2 flex-none">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className={`p-1.5 rounded-md flex-none ${isCurrentPlaylistGlobal ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-[var(--dj-cyan)]/20 text-[var(--dj-cyan)] border border-[var(--dj-cyan)]/30"}`}>
+                {isCurrentPlaylistGlobal ? <Globe className="w-4 h-4" /> : <ListMusic className="w-4 h-4" />}
+              </span>
+              <div className="min-w-0">
+                <span className="text-[8px] uppercase tracking-widest text-[var(--dj-muted)] font-mono block">
+                  {isCurrentPlaylistGlobal ? "🌐 Acervo Geral (Global)" : "🏢 Playlist da Loja"}
+                </span>
+                <p className="text-xs sm:text-sm font-bold text-[var(--dj-text)] truncate">
+                  {currentPlaylistName || "Playlist Padrão"}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              data-testid="button-open-playlist-modal"
+              onClick={() => setPlaylistModalOpen(true)}
+              className="px-2.5 py-1.5 rounded-lg border border-[var(--dj-cyan)] bg-[var(--dj-cyan)] text-[#060a14] font-bold text-[11px] uppercase tracking-wider hover:opacity-90 transition-all flex items-center gap-1.5 flex-none shadow-[0_0_10px_rgba(0,240,255,0.3)] cursor-pointer"
+              title="Clique para escolher outra playlist da loja ou do acervo geral"
+            >
+              <ListMusic className="w-3.5 h-3.5" />
+              <span>Trocar Playlist</span>
+            </button>
+          </div>
+
+          <div className="px-3 py-1.5 lg:px-5 lg:py-2 border-b border-[var(--dj-border)] flex items-center justify-between bg-[var(--dj-bg)]/30 flex-none">
             <h2 className="text-[10px] lg:text-xs uppercase font-bold text-[var(--dj-muted)] tracking-widest flex items-center gap-1.5">
               <Hash className="w-3 h-3 lg:w-4 lg:h-4" /> Fila ({scheduledItems.length} {scheduledItems.length === 1 ? "faixa" : "faixas"})
             </h2>
@@ -1567,6 +1515,129 @@ export default function PlayerPage() {
           </div>
         </div>
       </div>
+
+      {/* Modal / Dialog de Seleção de Playlist */}
+      <Dialog open={playlistModalOpen} onOpenChange={setPlaylistModalOpen}>
+        <DialogContent className="sm:max-w-xl bg-[#0d1322] border border-[var(--dj-border)] text-[var(--dj-text)] shadow-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-[var(--dj-cyan)] text-base font-bold uppercase tracking-wider">
+              <ListMusic className="w-5 h-5 text-[var(--dj-cyan)]" />
+              <span>Escolher Playlist Musical</span>
+            </DialogTitle>
+            <p className="text-xs text-[var(--dj-muted)]">
+              Selecione qual programação musical você deseja sintonizar nesta estação.
+            </p>
+          </DialogHeader>
+
+          {(() => {
+            const all = (availablePlaylists as any[]) || [];
+            const exclusivePlaylists = all.filter((p) => !p.isGlobal);
+            const globalPlaylists = all.filter((p) => !!p.isGlobal);
+
+            if (all.length === 0) {
+              return (
+                <div className="p-8 text-center text-xs text-[var(--dj-muted)] bg-black/20 rounded-lg border border-[var(--dj-border)]">
+                  Nenhuma playlist encontrada para esta conta. Peça ao administrador para criar ou liberar playlists para o seu plano.
+                </div>
+              );
+            }
+
+            return (
+              <div className="space-y-4 max-h-[65vh] overflow-y-auto pr-1">
+                {exclusivePlaylists.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between px-1">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-[var(--dj-cyan)] flex items-center gap-1.5">
+                        <Building2 className="w-3.5 h-3.5" /> Playlists da sua Empresa / Loja
+                      </span>
+                      <span className="text-[10px] text-[var(--dj-muted)] font-mono">{exclusivePlaylists.length}</span>
+                    </div>
+                    <div className="grid gap-2">
+                      {exclusivePlaylists.map((pl) => {
+                        const isCurrent = pl.id === selectedPlaylistId;
+                        return (
+                          <div
+                            key={pl.id}
+                            data-testid={`modal-playlist-option-${pl.id}`}
+                            onClick={() => {
+                              handlePlaylistSwitch(pl.id);
+                              setPlaylistModalOpen(false);
+                            }}
+                            className={`p-3 rounded-lg border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                              isCurrent
+                                ? "bg-[var(--dj-cyan-glow)] border-[var(--dj-cyan)] text-[var(--dj-cyan)] shadow-[0_0_12px_rgba(0,240,255,0.25)]"
+                                : "bg-black/30 border-[var(--dj-border)] hover:border-[var(--dj-cyan)] text-[var(--dj-text)]"
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <p className="font-bold text-xs sm:text-sm truncate">{pl.name}</p>
+                              <p className="text-[10px] text-[var(--dj-muted)]">{pl.itemCount} faixas musicais cadastradas</p>
+                            </div>
+                            {isCurrent ? (
+                              <span className="px-3 py-1 rounded bg-[var(--dj-cyan)] text-[#060a14] text-[10px] font-extrabold uppercase tracking-wider flex-none">
+                                Tocando Agora
+                              </span>
+                            ) : (
+                              <span className="px-3 py-1 rounded bg-[var(--dj-accent)] hover:bg-[var(--dj-cyan)] hover:text-[#060a14] text-[var(--dj-text)] text-[10px] font-bold uppercase tracking-wider flex-none transition-colors">
+                                Sintonizar ▶
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {globalPlaylists.length > 0 && (
+                  <div className="space-y-2 pt-2 border-t border-[var(--dj-border)]">
+                    <div className="flex items-center justify-between px-1">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-400 flex items-center gap-1.5">
+                        <Globe className="w-3.5 h-3.5" /> Acervo Geral (Disponível pelo seu Plano)
+                      </span>
+                      <span className="text-[10px] text-emerald-400/70 font-mono">{globalPlaylists.length}</span>
+                    </div>
+                    <div className="grid gap-2">
+                      {globalPlaylists.map((pl) => {
+                        const isCurrent = pl.id === selectedPlaylistId;
+                        return (
+                          <div
+                            key={pl.id}
+                            data-testid={`modal-playlist-option-${pl.id}`}
+                            onClick={() => {
+                              handlePlaylistSwitch(pl.id);
+                              setPlaylistModalOpen(false);
+                            }}
+                            className={`p-3 rounded-lg border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                              isCurrent
+                                ? "bg-emerald-500/15 border-emerald-500 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.25)]"
+                                : "bg-black/30 border-[var(--dj-border)] hover:border-emerald-500 text-[var(--dj-text)]"
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <p className="font-bold text-xs sm:text-sm truncate">{pl.name}</p>
+                              <p className="text-[10px] text-[var(--dj-muted)]">{pl.itemCount} faixas musicais do acervo</p>
+                            </div>
+                            {isCurrent ? (
+                              <span className="px-3 py-1 rounded bg-emerald-500 text-[#060a14] text-[10px] font-extrabold uppercase tracking-wider flex-none">
+                                Tocando Agora
+                              </span>
+                            ) : (
+                              <span className="px-3 py-1 rounded bg-[var(--dj-accent)] hover:bg-emerald-500 hover:text-[#060a14] text-[var(--dj-text)] text-[10px] font-bold uppercase tracking-wider flex-none transition-colors">
+                                Sintonizar ▶
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
