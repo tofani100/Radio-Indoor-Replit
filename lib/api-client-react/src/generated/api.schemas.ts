@@ -276,6 +276,11 @@ export interface Playlist {
   itemCount?: number;
   active: boolean;
   createdAt: string;
+  isGlobal?: boolean;
+  allowedPlans?: string[];
+  unitEmails?: string[];
+  coverUrl?: string;
+  genre?: string;
 }
 
 export type PlaylistWithItemsPlaybackMode =
@@ -302,6 +307,11 @@ export interface PlaylistWithItems {
   active: boolean;
   items: PlaylistItem[];
   createdAt: string;
+  isGlobal?: boolean;
+  allowedPlans?: string[];
+  unitEmails?: string[];
+  coverUrl?: string;
+  genre?: string;
 }
 
 export type CreatePlaylistBodyPlaybackMode =
@@ -316,6 +326,11 @@ export interface CreatePlaylistBody {
   name: string;
   clientId: number;
   playbackMode?: CreatePlaylistBodyPlaybackMode;
+  isGlobal?: boolean;
+  allowedPlans?: string[];
+  unitEmails?: string[];
+  coverUrl?: string;
+  genre?: string;
 }
 
 export type UpdatePlaylistBodyPlaybackMode =
@@ -330,6 +345,11 @@ export interface UpdatePlaylistBody {
   name?: string;
   playbackMode?: UpdatePlaylistBodyPlaybackMode;
   active?: boolean;
+  isGlobal?: boolean;
+  allowedPlans?: string[];
+  unitEmails?: string[];
+  coverUrl?: string;
+  genre?: string;
 }
 
 export interface AddPlaylistItemBody {
@@ -351,6 +371,9 @@ export interface PlaylistSummary {
   id: number;
   name: string;
   itemCount: number;
+  coverUrl?: string;
+  genre?: string;
+  isGlobal?: boolean;
 }
 
 export type PlaybackQueuePlaybackMode =
@@ -375,10 +398,16 @@ export interface PlaybackQueue {
   deviceId: number;
   /** The ID of the playlist whose items are in this queue */
   playlistId?: number;
+  playlistName?: string;
+  coverUrl?: string;
+  genre?: string;
+  isGlobal?: boolean;
   currentIndex: number;
   playbackMode: PlaybackQueuePlaybackMode;
   jingleMode: PlaybackQueueJingleMode;
   jingleInterval?: number;
+  jingleCount?: number;
+  voiceoverCount?: number;
   jingleIntervalSeconds?: number;
   musicVolume: number;
   jingleVolume: number;

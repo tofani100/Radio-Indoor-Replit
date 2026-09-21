@@ -64,6 +64,8 @@ export interface DBPlaylist {
   isGlobal?: boolean;
   allowedPlans?: string[];
   unitEmails?: string[];
+  coverUrl?: string;
+  genre?: string;
 }
 
 export interface DBPlaylistItem {
@@ -957,8 +959,8 @@ export async function handleStandaloneRequest(
     }
 
     if (!activePlaylist) {
-      // Pick first exclusive playlist for this unit, or first global playlist
-      const exclusive = allPlaylists.find((p) => {
+      // Pick first exclusive playlist for this unit, or random global playlist from authorized plan pool
+      const exclusive = allPlaylists.filter((p) => {
         if (p.active === false || p.isGlobal) return false;
         if (!clientIds.includes(p.clientId)) return false;
         if (Array.isArray(p.unitEmails) && p.unitEmails.length > 0) {
@@ -966,7 +968,33 @@ export async function handleStandaloneRequest(
         }
         return true;
       });
-      activePlaylist = exclusive || allPlaylists.find((p) => p.isGlobal === true && p.active !== false) || allPlaylists.find((p) => clientIds.includes(p.clientId) && p.active !== false);
+
+      if (exclusive.length > 0) {
+        activePlaylist = exclusive[0];
+      } else {
+        // Global fallback: select from accessible global playlists for this client's plan
+        const clientPlan = targetClient.plan || "standard";
+        const allowedGlobalIds = Array.isArray(targetClient.allowedGlobalPlaylistIds) ? targetClient.allowedGlobalPlaylistIds : null;
+        let globalPool = allPlaylists.filter((p) => p.isGlobal === true && p.active !== false);
+        if (allowedGlobalIds && allowedGlobalIds.length > 0) {
+          globalPool = globalPool.filter((p) => allowedGlobalIds.includes(p.id));
+        } else {
+          globalPool = globalPool.filter((p) => {
+            if (!p.allowedPlans || p.allowedPlans.includes("all")) return true;
+            return p.allowedPlans.includes(clientPlan);
+          });
+          if (clientPlan === "standard") globalPool = globalPool.slice(0, 10);
+          else if (clientPlan === "master") globalPool = globalPool.slice(0, 30);
+        }
+
+        if (globalPool.length > 0) {
+          // Select a random global playlist to keep music varied
+          const randomIndex = Math.floor(Math.random() * globalPool.length);
+          activePlaylist = globalPool[randomIndex];
+        } else {
+          activePlaylist = allPlaylists.find((p) => clientIds.includes(p.clientId) && p.active !== false);
+        }
+      }
     }
 
     if (!activePlaylist) {
@@ -1086,6 +1114,9 @@ export async function handleStandaloneRequest(
         clientId: targetClientId,
         deviceId: 1,
         playlistId: activePlaylist.id,
+        playlistName: activePlaylist.name,
+        coverUrl: activePlaylist.coverUrl,
+        genre: activePlaylist.genre,
         isGlobal: !!activePlaylist.isGlobal,
         currentIndex: 0,
         playbackMode: (activePlaylist?.playbackMode === "shuffle" || targetClient.playbackMode === "shuffle") ? "shuffle" : "sequential",
@@ -1172,6 +1203,8 @@ export async function handleStandaloneRequest(
         active: p.active,
         clientId: p.clientId,
         isGlobal: false,
+        coverUrl: p.coverUrl,
+        genre: p.genre,
         category: "exclusive" as const,
       };
     });
@@ -1184,6 +1217,8 @@ export async function handleStandaloneRequest(
       active: p.active,
       clientId: p.clientId,
       isGlobal: true,
+      coverUrl: p.coverUrl,
+      genre: p.genre,
       category: "global" as const,
     }));
 
@@ -1511,8 +1546,35 @@ export async function handleStandaloneRequest(
     return { status: 200, data: enriched };
   }
 
+  // ── Playlist Cover Upload ──
+  if ((path === "/api/playlists/upload-cover" || path === "/api/media/upload-cover") && method === "POST") {
+    let coverUrl = "";
+    if (body instanceof FormData) {
+      const file = body.get("file") as File;
+      if (file) {
+        try {
+          const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const devPrefix = isDev ? "dev/" : "";
+          const fileRef = storageRef(storage, `covers/${devPrefix}${Date.now()}_${safeName}`);
+          await uploadBytes(fileRef, file);
+          coverUrl = await getDownloadURL(fileRef);
+        } catch (err) {
+          console.warn("[Storage] Cover upload failed, using Data URL fallback:", err);
+          coverUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.readAsDataURL(file);
+          });
+        }
+      }
+    } else if (body?.coverUrl) {
+      coverUrl = body.coverUrl;
+    }
+    return { status: 200, data: { url: coverUrl } };
+  }
+
   if (path === "/api/playlists" && method === "POST") {
-    const { name, clientId, playbackMode, isGlobal, allowedPlans, unitEmails } = body || {};
+    const { name, clientId, playbackMode, isGlobal, allowedPlans, unitEmails, coverUrl, genre } = body || {};
     const newPl: Omit<DBPlaylist, "id"> = {
       name: name || "Nova Playlist",
       clientId: typeof clientId === "number" ? clientId : 1,
@@ -1522,6 +1584,8 @@ export async function handleStandaloneRequest(
       isGlobal: !!isGlobal,
       allowedPlans: Array.isArray(allowedPlans) ? allowedPlans : ["all"],
       unitEmails: Array.isArray(unitEmails) ? unitEmails : [],
+      coverUrl: coverUrl || undefined,
+      genre: genre || undefined,
     };
     const id = await insert("playlists", newPl);
     return { status: 201, data: { id, ...newPl, itemCount: 0 } };

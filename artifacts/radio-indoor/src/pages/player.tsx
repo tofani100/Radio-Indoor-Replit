@@ -238,8 +238,10 @@ export default function PlayerPage() {
     return (availablePlaylists as any[]).find((p) => p.id === selectedPlaylistId) ?? null;
   }, [availablePlaylists, selectedPlaylistId]);
 
-  const currentPlaylistName = currentPlaylist?.name ?? null;
-  const isCurrentPlaylistGlobal = !!currentPlaylist?.isGlobal;
+  const currentPlaylistName = currentPlaylist?.name ?? (queue as any)?.playlistName ?? null;
+  const isCurrentPlaylistGlobal = currentPlaylist?.isGlobal !== undefined ? !!currentPlaylist.isGlobal : !!(queue as any)?.isGlobal;
+  const currentPlaylistCover = currentPlaylist?.coverUrl || (queue as any)?.coverUrl || null;
+  const currentPlaylistGenre = currentPlaylist?.genre || (queue as any)?.genre || null;
 
   const multiplePlaylistsAvailable = (availablePlaylists?.length ?? 0) > 1;
 
@@ -1227,6 +1229,8 @@ export default function PlayerPage() {
               <div className="w-44 h-44 rounded-full bg-[#0a0f1a] border-4 border-[var(--dj-border)] shadow-[0_0_40px_rgba(0,240,255,0.1)] flex items-center justify-center mb-5 relative overflow-hidden flex-none">
                 {currentItem?.coverUrl ? (
                   <img src={currentItem.coverUrl} alt={currentItem.title} className={`w-full h-full object-cover transition-transform duration-1000 ${isPlaying ? "scale-110" : "scale-100"}`} />
+                ) : currentPlaylistCover ? (
+                  <img src={currentPlaylistCover} alt={currentPlaylistName || "Álbum"} className={`w-full h-full object-cover transition-transform duration-1000 ${isPlaying ? "scale-110" : "scale-100"}`} />
                 ) : (
                   <img src={logoSrc} alt="Play-Comunique" className={`w-24 h-24 object-contain transition-transform duration-1000 ${isPlaying ? "scale-110" : "scale-100"}`} />
                 )}
@@ -1312,14 +1316,29 @@ export default function PlayerPage() {
         <div className="lg:w-1/3 bg-[var(--dj-panel)] border border-[var(--dj-border)] rounded-lg shadow-lg flex flex-col overflow-hidden lg:min-h-0 max-h-64 sm:max-h-80 lg:max-h-none">
           {/* Barra de Playlist em Destaque no Topo da Fila */}
           <div className="px-3 py-2 sm:px-4 sm:py-2.5 border-b border-[var(--dj-border)] bg-[var(--dj-bg)]/80 flex items-center justify-between gap-2 flex-none">
-            <div className="flex items-center gap-2 min-w-0">
-              <span className={`p-1.5 rounded-md flex-none ${isCurrentPlaylistGlobal ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-[var(--dj-cyan)]/20 text-[var(--dj-cyan)] border border-[var(--dj-cyan)]/30"}`}>
-                {isCurrentPlaylistGlobal ? <Globe className="w-4 h-4" /> : <ListMusic className="w-4 h-4" />}
-              </span>
-              <div className="min-w-0">
-                <span className="text-[8px] uppercase tracking-widest text-[var(--dj-muted)] font-mono block">
-                  {isCurrentPlaylistGlobal ? "🌐 Acervo Geral (Global)" : "🏢 Playlist da Loja"}
+            <div className="flex items-center gap-2.5 min-w-0">
+              {currentPlaylistCover ? (
+                <img
+                  src={currentPlaylistCover}
+                  alt={currentPlaylistName || "Álbum"}
+                  className="w-9 h-9 rounded-md object-cover border border-[var(--dj-border)] flex-none shadow-sm"
+                />
+              ) : (
+                <span className={`p-2 rounded-md flex-none ${isCurrentPlaylistGlobal ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-[var(--dj-cyan)]/20 text-[var(--dj-cyan)] border border-[var(--dj-cyan)]/30"}`}>
+                  {isCurrentPlaylistGlobal ? <Globe className="w-4 h-4" /> : <ListMusic className="w-4 h-4" />}
                 </span>
+              )}
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[8px] uppercase tracking-widest text-[var(--dj-muted)] font-mono block">
+                    {isCurrentPlaylistGlobal ? "🌐 Acervo Geral" : "🏢 Loja"}
+                  </span>
+                  {currentPlaylistGenre && (
+                    <span className="text-[8px] px-1.5 py-0.2 rounded bg-[var(--dj-accent)] text-[var(--dj-cyan)] font-semibold uppercase">
+                      {currentPlaylistGenre}
+                    </span>
+                  )}
+                </div>
                 <p className="text-xs sm:text-sm font-bold text-[var(--dj-text)] truncate">
                   {currentPlaylistName || "Playlist Padrão"}
                 </p>
@@ -1569,16 +1588,36 @@ export default function PlayerPage() {
                                 : "bg-black/30 border-[var(--dj-border)] hover:border-[var(--dj-cyan)] text-[var(--dj-text)]"
                             }`}
                           >
-                            <div className="min-w-0">
-                              <p className="font-bold text-xs sm:text-sm truncate">{pl.name}</p>
-                              <p className="text-[10px] text-[var(--dj-muted)]">{pl.itemCount} faixas musicais cadastradas</p>
+                            <div className="flex items-center gap-3 min-w-0">
+                              {pl.coverUrl ? (
+                                <img
+                                  src={pl.coverUrl}
+                                  alt={pl.name}
+                                  className="w-12 h-12 rounded-lg object-cover border border-[var(--dj-border)] flex-none shadow-md"
+                                />
+                              ) : (
+                                <div className="w-12 h-12 rounded-lg bg-[var(--dj-accent)] border border-[var(--dj-border)] flex items-center justify-center flex-none text-[var(--dj-cyan)]">
+                                  <Building2 className="w-6 h-6" />
+                                </div>
+                              )}
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <p className="font-bold text-xs sm:text-sm truncate">{pl.name}</p>
+                                  {pl.genre && (
+                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-[var(--dj-accent)] text-[var(--dj-cyan)] font-semibold uppercase">
+                                      {pl.genre}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[10px] text-[var(--dj-muted)]">{pl.itemCount} faixas musicais cadastradas</p>
+                              </div>
                             </div>
                             {isCurrent ? (
-                              <span className="px-3 py-1 rounded bg-[var(--dj-cyan)] text-[#060a14] text-[10px] font-extrabold uppercase tracking-wider flex-none">
+                              <span className="px-3 py-1.5 rounded bg-[var(--dj-cyan)] text-[#060a14] text-[10px] font-extrabold uppercase tracking-wider flex-none shadow">
                                 Tocando Agora
                               </span>
                             ) : (
-                              <span className="px-3 py-1 rounded bg-[var(--dj-accent)] hover:bg-[var(--dj-cyan)] hover:text-[#060a14] text-[var(--dj-text)] text-[10px] font-bold uppercase tracking-wider flex-none transition-colors">
+                              <span className="px-3 py-1.5 rounded bg-[var(--dj-accent)] hover:bg-[var(--dj-cyan)] hover:text-[#060a14] text-[var(--dj-text)] text-[10px] font-bold uppercase tracking-wider flex-none transition-colors">
                                 Sintonizar ▶
                               </span>
                             )}
@@ -1614,16 +1653,36 @@ export default function PlayerPage() {
                                 : "bg-black/30 border-[var(--dj-border)] hover:border-emerald-500 text-[var(--dj-text)]"
                             }`}
                           >
-                            <div className="min-w-0">
-                              <p className="font-bold text-xs sm:text-sm truncate">{pl.name}</p>
-                              <p className="text-[10px] text-[var(--dj-muted)]">{pl.itemCount} faixas musicais do acervo</p>
+                            <div className="flex items-center gap-3 min-w-0">
+                              {pl.coverUrl ? (
+                                <img
+                                  src={pl.coverUrl}
+                                  alt={pl.name}
+                                  className="w-12 h-12 rounded-lg object-cover border border-emerald-500/30 flex-none shadow-md"
+                                />
+                              ) : (
+                                <div className="w-12 h-12 rounded-lg bg-emerald-950/50 border border-emerald-500/30 flex items-center justify-center flex-none text-emerald-400">
+                                  <ListMusic className="w-6 h-6" />
+                                </div>
+                              )}
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <p className="font-bold text-xs sm:text-sm truncate">{pl.name}</p>
+                                  {pl.genre && (
+                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-semibold uppercase">
+                                      {pl.genre}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[10px] text-[var(--dj-muted)]">{pl.itemCount} faixas musicais do acervo</p>
+                              </div>
                             </div>
                             {isCurrent ? (
-                              <span className="px-3 py-1 rounded bg-emerald-500 text-[#060a14] text-[10px] font-extrabold uppercase tracking-wider flex-none">
+                              <span className="px-3 py-1.5 rounded bg-emerald-500 text-[#060a14] text-[10px] font-extrabold uppercase tracking-wider flex-none shadow">
                                 Tocando Agora
                               </span>
                             ) : (
-                              <span className="px-3 py-1 rounded bg-[var(--dj-accent)] hover:bg-emerald-500 hover:text-[#060a14] text-[var(--dj-text)] text-[10px] font-bold uppercase tracking-wider flex-none transition-colors">
+                              <span className="px-3 py-1.5 rounded bg-[var(--dj-accent)] hover:bg-emerald-500 hover:text-[#060a14] text-[var(--dj-text)] text-[10px] font-bold uppercase tracking-wider flex-none transition-colors">
                                 Sintonizar ▶
                               </span>
                             )}

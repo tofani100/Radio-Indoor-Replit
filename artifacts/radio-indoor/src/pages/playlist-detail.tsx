@@ -449,14 +449,38 @@ export default function PlaylistDetailPage() {
       </button>
 
       <div className="flex items-start justify-between mb-8 gap-4">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold text-foreground" data-testid="text-playlist-name">{playlist.name}</h1>
-          {currentClient && (
-            <p className="text-sm text-muted-foreground mt-1" data-testid="text-playlist-client">
-              Cliente: <span className="font-medium text-foreground">{currentClient.name}</span>
-            </p>
+        <div className="flex items-start gap-4 min-w-0">
+          {(playlist as any)?.coverUrl ? (
+            <img
+              src={(playlist as any).coverUrl}
+              alt={playlist.name}
+              className="w-20 h-20 rounded-xl object-cover border shadow-sm flex-none"
+            />
+          ) : (
+            <div className="w-20 h-20 rounded-xl bg-primary/10 border flex items-center justify-center text-primary flex-none">
+              <Music className="w-8 h-8" />
+            </div>
           )}
-          <p className="text-xs text-muted-foreground mt-0.5">{playlist.items?.length ?? 0} faixas · modo {playlist.playbackMode}</p>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-2xl font-semibold text-foreground" data-testid="text-playlist-name">{playlist.name}</h1>
+              {(playlist as any)?.genre && (
+                <span className="text-xs px-2 py-0.5 rounded-md bg-primary/10 text-primary font-bold uppercase">
+                  {(playlist as any).genre}
+                </span>
+              )}
+              {(playlist as any)?.isGlobal && (
+                <span className="text-xs px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 font-bold uppercase">
+                  🌐 Acervo Global
+                </span>
+              )}
+            </div>
+            {currentClient && (
+              <p className="text-sm text-muted-foreground mt-1" data-testid="text-playlist-client">
+                Cliente: <span className="font-medium text-foreground">{currentClient.name}</span>
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground mt-0.5">{playlist.items?.length ?? 0} faixas · modo {playlist.playbackMode}</p>
           {currentClient && (
             <button
               type="button"
@@ -482,6 +506,7 @@ export default function PlaylistDetailPage() {
               <Settings2 className="w-3 h-3 opacity-60" />
             </button>
           )}
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button
