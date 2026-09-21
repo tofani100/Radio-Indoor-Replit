@@ -1,6 +1,6 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, GripVertical, Plus, Trash2, Music, Mic, ToggleLeft, ToggleRight, Search, CheckSquare, Square, Loader2, Settings2, Eye, EyeOff } from "lucide-react";
+import { ArrowLeft, GripVertical, Plus, Trash2, Music, Mic, ToggleLeft, ToggleRight, Search, CheckSquare, Square, Loader2, Settings2, Eye, EyeOff, Upload, CheckCircle2, XCircle } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -174,6 +174,12 @@ export default function PlaylistDetailPage() {
     jingleIntervalSeconds: "900",
   });
 
+  const [directUploadOpen, setDirectUploadOpen] = useState(false);
+  const [uploadAudioType, setUploadAudioType] = useState<"jingle" | "voiceover">("jingle");
+  const [directUploadItems, setDirectUploadItems] = useState<{ file: File; title: string; progress: number; status: string }[]>([]);
+  const [isDirectUploading, setIsDirectUploading] = useState(false);
+  const directFileInputRef = useRef<HTMLInputElement>(null);
+
   const { data: playlist, isLoading } = useGetPlaylist(playlistId, { query: { queryKey: getGetPlaylistQueryKey(playlistId) } });
   const [localItems, setLocalItems] = useState<any[]>([]);
 
@@ -285,6 +291,46 @@ export default function PlaylistDetailPage() {
     } catch {
       inv();
     }
+  };
+
+  const handleStartDirectUpload = async () => {
+    if (!playlist || directUploadItems.length === 0) return;
+    setIsDirectUploading(true);
+
+    for (let i = 0; i < directUploadItems.length; i++) {
+      const item = directUploadItems[i]!;
+      setDirectUploadItems((prev) =>
+        prev.map((u, idx) => (idx === i ? { ...u, status: "uploading", progress: 20 } : u))
+      );
+
+      try {
+        const fd = new FormData();
+        fd.append("file", item.file);
+        fd.append("title", item.title);
+        fd.append("type", uploadAudioType);
+        fd.append("clientId", String(playlist.clientId || 1));
+        fd.append("playlistId", String(playlistId));
+
+        await handleStandaloneRequest("/api/media", "POST", fd, (pct) => {
+          setDirectUploadItems((prev) =>
+            prev.map((u, idx) => (idx === i ? { ...u, progress: pct } : u))
+          );
+        });
+
+        setDirectUploadItems((prev) =>
+          prev.map((u, idx) => (idx === i ? { ...u, status: "done", progress: 100 } : u))
+        );
+      } catch {
+        setDirectUploadItems((prev) =>
+          prev.map((u, idx) => (idx === i ? { ...u, status: "error" } : u))
+        );
+      }
+    }
+
+    setIsDirectUploading(false);
+    toast({ title: "Comerciais adicionados à playlist com sucesso!" });
+    inv();
+    qc.invalidateQueries({ queryKey: ["/api/playlists"] });
   };
 
   const handleToggleItemActive = async (itemId: number, currentActive?: boolean) => {
@@ -528,8 +574,19 @@ export default function PlaylistDetailPage() {
               <Trash2 className="w-4 h-4 mr-2" /> Limpar Faixas
             </Button>
           )}
-          <Button data-testid="button-add-item" onClick={() => { setAddOpen(true); setSelected(new Set()); setSearch(""); setTypeFilter("all"); setAddProgress(0); }}>
-            <Plus className="w-4 h-4 mr-2" /> Adicionar
+          <Button
+            variant="outline"
+            data-testid="button-add-item"
+            onClick={() => { setAddOpen(true); setSelected(new Set()); setSearch(""); setTypeFilter("all"); setAddProgress(0); }}
+          >
+            Buscar na Biblioteca
+          </Button>
+          <Button
+            onClick={() => { setDirectUploadOpen(true); setDirectUploadItems([]); }}
+            className="gap-1.5 bg-primary hover:bg-primary/90 shadow-sm"
+          >
+            <Upload className="w-4 h-4" />
+            <span>+ Subir Jingle / Locução</span>
           </Button>
         </div>
       </div>
@@ -816,6 +873,94 @@ export default function PlaylistDetailPage() {
                 : selected.size === 0
                   ? "Adicionar"
                   : `Adicionar ${selected.size} ${selected.size === 1 ? "faixa" : "faixas"}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Subir Jingle / Locução Direto para esta Playlist */}
+      <Dialog open={directUploadOpen} onOpenChange={(o) => { if (!isDirectUploading) setDirectUploadOpen(o); }}>
+        <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Upload className="w-5 h-5 text-primary" />
+              <span>Subir Áudios para esta Playlist</span>
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div>
+              <Label className="text-xs font-semibold">Tipo do Áudio Comercial</Label>
+              <Select
+                value={uploadAudioType}
+                onValueChange={(v) => setUploadAudioType(v as "jingle" | "voiceover")}
+              >
+                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="jingle">🔔 Jingle (Vinheta cantada/curta)</SelectItem>
+                  <SelectItem value="voiceover">🎙️ Locução (Aviso falado / chamada)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <input
+              ref={directFileInputRef}
+              type="file"
+              multiple
+              accept="audio/*"
+              className="hidden"
+              onChange={(e) => {
+                const files = e.target.files;
+                if (!files) return;
+                const items = Array.from(files).map((f) => ({
+                  file: f,
+                  title: f.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ").trim(),
+                  progress: 0,
+                  status: "queued",
+                }));
+                setDirectUploadItems(items);
+              }}
+            />
+
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => directFileInputRef.current?.click()}
+              disabled={isDirectUploading}
+              className="w-full py-6 border-dashed border-2 flex flex-col items-center gap-1 hover:bg-muted/40"
+            >
+              <Mic className="w-6 h-6 text-primary opacity-80" />
+              <span className="text-xs font-semibold">Clique para selecionar arquivos de áudio</span>
+              <span className="text-[10px] text-muted-foreground">Você pode selecionar múltiplos arquivos ao mesmo tempo</span>
+            </Button>
+
+            {directUploadItems.length > 0 && (
+              <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1 border rounded-lg p-2 bg-muted/20">
+                {directUploadItems.map((item, idx) => (
+                  <div key={idx} className="flex items-center justify-between gap-2 p-1.5 rounded bg-card border text-xs">
+                    <span className="truncate flex-1 font-medium">{item.title}</span>
+                    {item.status === "uploading" && (
+                      <span className="text-[10px] text-primary font-mono flex items-center gap-1">
+                        <Loader2 className="w-3 h-3 animate-spin" /> {item.progress}%
+                      </span>
+                    )}
+                    {item.status === "done" && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />}
+                    {item.status === "error" && <XCircle className="w-3.5 h-3.5 text-destructive" />}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDirectUploadOpen(false)} disabled={isDirectUploading}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleStartDirectUpload}
+              disabled={isDirectUploading || directUploadItems.length === 0 || directUploadItems.every((u) => u.status === "done")}
+            >
+              {isDirectUploading ? "Enviando..." : `Enviar ${directUploadItems.length} Arquivo(s)`}
             </Button>
           </DialogFooter>
         </DialogContent>

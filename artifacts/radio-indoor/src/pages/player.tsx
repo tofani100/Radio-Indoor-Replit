@@ -3,7 +3,7 @@ import {
   Radio, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, AlertCircle,
   Clock, Music, Activity, Headphones, Hash, Mic2, SlidersHorizontal,
   Download, Share, CheckCircle2, X, ListMusic, ChevronDown, ArrowLeftRight, Shuffle,
-  Building2, Globe,
+  Building2, Globe, Disc3, Megaphone,
 } from "lucide-react";
 import {
   useRegisterDevice, useGetPlaybackQueue, getGetPlaybackQueueQueryKey,
@@ -66,6 +66,19 @@ function setStoredPlaylistIdForEmail(email: string, id: number) {
   localStorage.setItem(`radio_indoor_playlist_email_${email}`, String(id));
 }
 
+/** Persist selected commercial playlist ID per logged-in email */
+function getStoredCommercialPlaylistIdForEmail(email: string): number | null {
+  if (!email) return null;
+  const v = localStorage.getItem(`radio_indoor_commercial_playlist_${email}`);
+  if (!v) return null;
+  const n = parseInt(v, 10);
+  return isNaN(n) ? null : n;
+}
+function setStoredCommercialPlaylistIdForEmail(email: string, id: number) {
+  if (!email) return;
+  localStorage.setItem(`radio_indoor_commercial_playlist_${email}`, String(id));
+}
+
 type PlayerState = "gate" | "pending" | "duplicate" | "blocked" | "active";
 
 export default function PlayerPage() {
@@ -75,11 +88,16 @@ export default function PlayerPage() {
   const [playerState, setPlayerState] = useState<PlayerState>(email ? "pending" : "gate");
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<number | null>(() => {
     const storedEmail = getStoredEmail();
-    // Prefer email-keyed preference (survives device changes); fall back to uuid-keyed (legacy)
-    return getStoredPlaylistIdForEmail(storedEmail) ?? getStoredPlaylistId(uuid);
+    const saved = getStoredPlaylistIdForEmail(storedEmail) ?? getStoredPlaylistId(uuid);
+    return saved !== null ? saved : 0; // Default to 0 (Mix Aleatório do Plano)
+  });
+  const [selectedCommercialPlaylistId, setSelectedCommercialPlaylistId] = useState<number | null>(() => {
+    const storedEmail = getStoredEmail();
+    return getStoredCommercialPlaylistIdForEmail(storedEmail);
   });
   const [playlistDropdownOpen, setPlaylistDropdownOpen] = useState(false);
   const [playlistModalOpen, setPlaylistModalOpen] = useState(false);
+  const [commercialModalOpen, setCommercialModalOpen] = useState(false);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [masterVolume, setMasterVolume] = useState(() => {
@@ -175,7 +193,12 @@ export default function PlayerPage() {
   const heartbeat = useDeviceHeartbeat({ mutation: {} });
   const logPlayback = useLogPlayback({ mutation: {} });
 
-  const queueParams = { uuid, email, ...(selectedPlaylistId ? { playlistId: selectedPlaylistId } : {}) };
+  const queueParams = {
+    uuid,
+    email,
+    ...(selectedPlaylistId !== null ? { playlistId: selectedPlaylistId } : {}),
+    ...(selectedCommercialPlaylistId !== null ? { commercialPlaylistId: selectedCommercialPlaylistId } : {}),
+  };
   const { data: queue, refetch: refetchQueue, error: queueError } = useGetPlaybackQueue(
     queueParams,
     {
@@ -209,39 +232,67 @@ export default function PlayerPage() {
     }
   );
 
+  const musicalPlaylists = useMemo(() => {
+    return ((availablePlaylists as any[]) || []).filter((p) => !!p.isGlobal);
+  }, [availablePlaylists]);
+
+  const commercialPlaylists = useMemo(() => {
+    return ((availablePlaylists as any[]) || []).filter((p) => !p.isGlobal);
+  }, [availablePlaylists]);
+
   // Sync selected playlist ID when availablePlaylists arrives or changes
   useEffect(() => {
     if (!availablePlaylists || availablePlaylists.length === 0) return;
-    const exists = selectedPlaylistId ? availablePlaylists.some((p) => p.id === selectedPlaylistId) : false;
-    if (!exists) {
-      const firstId = availablePlaylists[0]!.id;
-      setSelectedPlaylistId(firstId);
-      setStoredPlaylistId(uuid, firstId);
-      setStoredPlaylistIdForEmail(email, firstId);
+    if (selectedPlaylistId === 0) return; // 0 is Mix Aleatório do Plano, always valid
+    if (selectedPlaylistId !== null) {
+      const exists = availablePlaylists.some((p) => p.id === selectedPlaylistId);
+      if (!exists) {
+        setSelectedPlaylistId(0);
+        setStoredPlaylistId(uuid, 0);
+        setStoredPlaylistIdForEmail(email, 0);
+      }
     }
   }, [availablePlaylists, selectedPlaylistId, uuid, email]);
 
-  // Sync selected playlist ID from the queue response.
+  // Sync selected playlist ID and commercial playlist ID from queue response
   useEffect(() => {
-    if (!queue?.playlistId) return;
-    if (selectedPlaylistId !== queue.playlistId) {
-      setSelectedPlaylistId(queue.playlistId);
-      setStoredPlaylistId(uuid, queue.playlistId);
-      setStoredPlaylistIdForEmail(email, queue.playlistId);
+    if (queue?.playlistId !== undefined && queue.playlistId !== null) {
+      if (selectedPlaylistId !== queue.playlistId) {
+        setSelectedPlaylistId(queue.playlistId);
+        setStoredPlaylistId(uuid, queue.playlistId);
+        setStoredPlaylistIdForEmail(email, queue.playlistId);
+      }
+    }
+    if (queue?.commercialPlaylistId !== undefined && queue.commercialPlaylistId !== null) {
+      if (selectedCommercialPlaylistId !== queue.commercialPlaylistId) {
+        setSelectedCommercialPlaylistId(queue.commercialPlaylistId);
+        setStoredCommercialPlaylistIdForEmail(email, queue.commercialPlaylistId);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queue?.playlistId]);
+  }, [queue?.playlistId, queue?.commercialPlaylistId]);
 
   // MUST be before any early return (Rules of Hooks)
+  const isRandomPlanMix = selectedPlaylistId === 0 || (queue as any)?.playlistId === 0;
+
   const currentPlaylist = useMemo(() => {
-    if (!availablePlaylists || !selectedPlaylistId) return null;
+    if (!availablePlaylists || selectedPlaylistId === 0 || !selectedPlaylistId) return null;
     return (availablePlaylists as any[]).find((p) => p.id === selectedPlaylistId) ?? null;
   }, [availablePlaylists, selectedPlaylistId]);
 
-  const currentPlaylistName = currentPlaylist?.name ?? (queue as any)?.playlistName ?? null;
-  const isCurrentPlaylistGlobal = currentPlaylist?.isGlobal !== undefined ? !!currentPlaylist.isGlobal : !!(queue as any)?.isGlobal;
-  const currentPlaylistCover = currentPlaylist?.coverUrl || (queue as any)?.coverUrl || null;
-  const currentPlaylistGenre = currentPlaylist?.genre || (queue as any)?.genre || null;
+  const currentPlaylistName = isRandomPlanMix
+    ? "🔀 Mix Aleatório do Plano"
+    : (currentPlaylist?.name ?? (queue as any)?.playlistName ?? "Mix Padrão");
+  const isCurrentPlaylistGlobal = isRandomPlanMix || (currentPlaylist?.isGlobal ?? (queue as any)?.isGlobal ?? true);
+  const currentPlaylistCover = isRandomPlanMix ? null : (currentPlaylist?.coverUrl || (queue as any)?.coverUrl || null);
+  const currentPlaylistGenre = isRandomPlanMix ? "Multi-Gêneros" : (currentPlaylist?.genre || (queue as any)?.genre || null);
+
+  const currentCommercialPlaylist = useMemo(() => {
+    if (!commercialPlaylists || !selectedCommercialPlaylistId) return null;
+    return commercialPlaylists.find((p) => p.id === selectedCommercialPlaylistId) ?? null;
+  }, [commercialPlaylists, selectedCommercialPlaylistId]);
+
+  const currentCommercialName = currentCommercialPlaylist?.name ?? (queue as any)?.commercialPlaylistName ?? (commercialPlaylists.length > 0 ? commercialPlaylists[0]?.name : "Comerciais da Loja");
 
   const multiplePlaylistsAvailable = (availablePlaylists?.length ?? 0) > 1;
 
@@ -912,9 +963,9 @@ export default function PlayerPage() {
     playTrack(idx);
   };
 
-  /** Switch to a different playlist: stop audio, reset state, refetch queue */
-  const handlePlaylistSwitch = (playlistId: number) => {
-    setPlaylistDropdownOpen(false);
+  /** Switch musical album / style (0 = random plan mix) */
+  const handleMusicalSwitch = (playlistId: number) => {
+    setPlaylistModalOpen(false);
     if (playlistId === selectedPlaylistId) return;
 
     // Stop current audio cleanly
@@ -943,6 +994,18 @@ export default function PlayerPage() {
     setTimeout(() => { void refetchQueue(); }, 50);
   };
 
+  /** Switch commercial schedule (jingles & locuções) */
+  const handleCommercialSwitch = (commercialId: number) => {
+    setCommercialModalOpen(false);
+    if (commercialId === selectedCommercialPlaylistId) return;
+
+    setSelectedCommercialPlaylistId(commercialId);
+    setStoredCommercialPlaylistIdForEmail(email, commercialId);
+
+    // Refetch will pick up the new commercialPlaylistId via queueParams
+    setTimeout(() => { void refetchQueue(); }, 50);
+  };
+
   return (
     <div className="dj-console-scope min-h-screen lg:h-screen w-full flex flex-col p-2 sm:p-3 lg:p-4 gap-2 sm:gap-3 lg:gap-4 box-border overflow-y-auto lg:overflow-hidden select-none">
       {/* Top Header */}
@@ -964,7 +1027,7 @@ export default function PlayerPage() {
           )}
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-4">
+        <div className="flex items-center gap-2 sm:gap-3">
           {/* Botão de Alternância de Modo (Aleatório / Sequencial) */}
           <button
             data-testid="button-toggle-shuffle"
@@ -991,28 +1054,35 @@ export default function PlayerPage() {
             </span>
           </button>
 
-          {/* Playlist switcher — exibido para permitir a troca entre todas as playlists do cliente */}
-          {(availablePlaylists?.length ?? 0) > 0 && (
+          {/* 🎵 Botão Estilo Musical no Header */}
+          <button
+            data-testid="header-button-musical"
+            type="button"
+            onClick={() => setPlaylistModalOpen(true)}
+            className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded border border-emerald-500 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500 hover:text-[#060a14] text-[11px] font-bold tracking-wider transition-all cursor-pointer shadow-sm"
+            title="Escolher Álbum Musical ou Mix Aleatório do Plano"
+          >
+            <Disc3 className="w-3.5 h-3.5 flex-none text-emerald-400" />
+            <span className="truncate max-w-[110px] sm:max-w-[150px]">
+              {currentPlaylistName}
+            </span>
+            <span className="text-[9px] uppercase tracking-widest opacity-80 font-mono hidden sm:inline">▼</span>
+          </button>
+
+          {/* 📢 Botão Grade Comercial no Header (se houver mais de uma opção) */}
+          {commercialPlaylists.length > 1 && (
             <button
-              data-testid="button-playlist-switcher"
+              data-testid="header-button-commercial"
               type="button"
-              onClick={() => setPlaylistModalOpen(true)}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded border text-[11px] font-bold tracking-wider transition-all cursor-pointer shadow-sm ${
-                isCurrentPlaylistGlobal
-                  ? "border-emerald-500 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500 hover:text-[#060a14]"
-                  : "border-[var(--dj-cyan)] bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] hover:bg-[var(--dj-cyan)] hover:text-[#060a14]"
-              }`}
-              title="Clique para escolher outra playlist"
+              onClick={() => setCommercialModalOpen(true)}
+              className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded border border-amber-500 bg-amber-500/15 text-amber-300 hover:bg-amber-500 hover:text-[#060a14] text-[11px] font-bold tracking-wider transition-all cursor-pointer shadow-sm"
+              title="Alternar Programação Comercial (Jingles & Locuções)"
             >
-              {isCurrentPlaylistGlobal ? (
-                <Globe className="w-3.5 h-3.5 flex-none text-emerald-400" />
-              ) : (
-                <ListMusic className="w-3.5 h-3.5 flex-none" />
-              )}
-              <span className="truncate max-w-[150px]">
-                {currentPlaylistName ?? "Playlist"}
+              <Megaphone className="w-3.5 h-3.5 flex-none text-amber-400" />
+              <span className="truncate max-w-[100px] sm:max-w-[130px]">
+                {currentCommercialName}
               </span>
-              <span className="text-[9px] uppercase tracking-widest opacity-80 ml-0.5 font-mono">▼ Trocar</span>
+              <span className="text-[9px] uppercase tracking-widest opacity-80 font-mono hidden sm:inline">▼</span>
             </button>
           )}
 
@@ -1314,47 +1384,84 @@ export default function PlayerPage() {
 
         {/* Center: Queue */}
         <div className="lg:w-1/3 bg-[var(--dj-panel)] border border-[var(--dj-border)] rounded-lg shadow-lg flex flex-col overflow-hidden lg:min-h-0 max-h-64 sm:max-h-80 lg:max-h-none">
-          {/* Barra de Playlist em Destaque no Topo da Fila */}
-          <div className="px-3 py-2 sm:px-4 sm:py-2.5 border-b border-[var(--dj-border)] bg-[var(--dj-bg)]/80 flex items-center justify-between gap-2 flex-none">
-            <div className="flex items-center gap-2.5 min-w-0">
-              {currentPlaylistCover ? (
-                <img
-                  src={currentPlaylistCover}
-                  alt={currentPlaylistName || "Álbum"}
-                  className="w-9 h-9 rounded-md object-cover border border-[var(--dj-border)] flex-none shadow-sm"
-                />
-              ) : (
-                <span className={`p-2 rounded-md flex-none ${isCurrentPlaylistGlobal ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-[var(--dj-cyan)]/20 text-[var(--dj-cyan)] border border-[var(--dj-cyan)]/30"}`}>
-                  {isCurrentPlaylistGlobal ? <Globe className="w-4 h-4" /> : <ListMusic className="w-4 h-4" />}
-                </span>
-              )}
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[8px] uppercase tracking-widest text-[var(--dj-muted)] font-mono block">
-                    {isCurrentPlaylistGlobal ? "🌐 Acervo Geral" : "🏢 Loja"}
-                  </span>
-                  {currentPlaylistGenre && (
-                    <span className="text-[8px] px-1.5 py-0.2 rounded bg-[var(--dj-accent)] text-[var(--dj-cyan)] font-semibold uppercase">
-                      {currentPlaylistGenre}
+          {/* Barra de Seleção Dupla: Estilo Musical & Programação Comercial */}
+          <div className="border-b border-[var(--dj-border)] bg-[var(--dj-bg)]/90 flex flex-col sm:flex-row divide-y sm:divide-y-0 sm:divide-x divide-[var(--dj-border)] flex-none">
+            {/* 🎵 Painel de Estilo Musical */}
+            <div className="flex-1 p-2.5 sm:p-3 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5 min-w-0">
+                {currentPlaylistCover ? (
+                  <img
+                    src={currentPlaylistCover}
+                    alt={currentPlaylistName}
+                    className="w-9 h-9 rounded-lg object-cover border border-[var(--dj-border)] flex-none shadow-sm"
+                  />
+                ) : (
+                  <div className="w-9 h-9 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center flex-none text-emerald-400">
+                    {isRandomPlanMix ? <Shuffle className="w-4 h-4 text-emerald-400 animate-pulse" /> : <Disc3 className="w-4 h-4 text-emerald-400" />}
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[8px] uppercase tracking-widest text-emerald-400 font-bold font-mono">
+                      {isRandomPlanMix ? "🔀 Mix Geral" : "🎵 Álbum Musical"}
                     </span>
-                  )}
+                    {currentPlaylistGenre && (
+                      <span className="text-[8px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-semibold uppercase">
+                        {currentPlaylistGenre}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs sm:text-sm font-bold text-[var(--dj-text)] truncate" title={currentPlaylistName}>
+                    {currentPlaylistName}
+                  </p>
                 </div>
-                <p className="text-xs sm:text-sm font-bold text-[var(--dj-text)] truncate">
-                  {currentPlaylistName || "Playlist Padrão"}
-                </p>
               </div>
+
+              <button
+                type="button"
+                data-testid="button-open-musical-modal"
+                onClick={() => setPlaylistModalOpen(true)}
+                className="px-2.5 py-1.5 rounded-lg border border-emerald-500 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500 hover:text-[#060a14] font-bold text-[10px] uppercase tracking-wider transition-all flex items-center gap-1 flex-none cursor-pointer shadow-sm"
+                title="Escolher outro álbum musical ou alternar para o Mix Aleatório"
+              >
+                <Disc3 className="w-3.5 h-3.5" />
+                <span>Trocar Estilo</span>
+              </button>
             </div>
 
-            <button
-              type="button"
-              data-testid="button-open-playlist-modal"
-              onClick={() => setPlaylistModalOpen(true)}
-              className="px-2.5 py-1.5 rounded-lg border border-[var(--dj-cyan)] bg-[var(--dj-cyan)] text-[#060a14] font-bold text-[11px] uppercase tracking-wider hover:opacity-90 transition-all flex items-center gap-1.5 flex-none shadow-[0_0_10px_rgba(0,240,255,0.3)] cursor-pointer"
-              title="Clique para escolher outra playlist da loja ou do acervo geral"
-            >
-              <ListMusic className="w-3.5 h-3.5" />
-              <span>Trocar Playlist</span>
-            </button>
+            {/* 📢 Painel de Programação Comercial */}
+            <div className="flex-1 p-2.5 sm:p-3 flex items-center justify-between gap-2 bg-black/20">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-9 h-9 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center flex-none text-amber-400">
+                  <Megaphone className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="text-[8px] uppercase tracking-widest text-amber-400 font-bold font-mono block">
+                    📢 Comerciais
+                  </span>
+                  <p className="text-xs sm:text-sm font-bold text-[var(--dj-text)] truncate" title={currentCommercialName}>
+                    {currentCommercialName}
+                  </p>
+                </div>
+              </div>
+
+              {commercialPlaylists.length > 1 ? (
+                <button
+                  type="button"
+                  data-testid="button-open-commercial-modal"
+                  onClick={() => setCommercialModalOpen(true)}
+                  className="px-2.5 py-1.5 rounded-lg border border-amber-500 bg-amber-500/20 text-amber-300 hover:bg-amber-500 hover:text-[#060a14] font-bold text-[10px] uppercase tracking-wider transition-all flex items-center gap-1 flex-none cursor-pointer shadow-sm"
+                  title="Alternar grade de locuções da filial (Ex: Abre Domingo vs Não Abre)"
+                >
+                  <Mic2 className="w-3.5 h-3.5" />
+                  <span>Alternar</span>
+                </button>
+              ) : (
+                <span className="text-[9px] uppercase font-bold tracking-wider px-2 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400/80 flex-none">
+                  Ativa
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="px-3 py-1.5 lg:px-5 lg:py-2 border-b border-[var(--dj-border)] flex items-center justify-between bg-[var(--dj-bg)]/30 flex-none">
@@ -1535,166 +1642,201 @@ export default function PlayerPage() {
         </div>
       </div>
 
-      {/* Modal / Dialog de Seleção de Playlist */}
+      {/* 🎵 Modal de Seleção de Álbum Musical ou Mix Aleatório */}
       <Dialog open={playlistModalOpen} onOpenChange={setPlaylistModalOpen}>
-        <DialogContent className="sm:max-w-xl bg-[#0d1322] border border-[var(--dj-border)] text-[var(--dj-text)] shadow-2xl">
+        <DialogContent className="sm:max-w-2xl bg-[#0d1322] border border-[var(--dj-border)] text-[var(--dj-text)] shadow-2xl">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-[var(--dj-cyan)] text-base font-bold uppercase tracking-wider">
-              <ListMusic className="w-5 h-5 text-[var(--dj-cyan)]" />
-              <span>Escolher Playlist Musical</span>
+            <DialogTitle className="flex items-center gap-2 text-emerald-400 text-base font-bold uppercase tracking-wider">
+              <Disc3 className="w-5 h-5 text-emerald-400" />
+              <span>Escolher Estilo / Álbum Musical</span>
             </DialogTitle>
             <p className="text-xs text-[var(--dj-muted)]">
-              Selecione qual programação musical você deseja sintonizar nesta estação.
+              Selecione um álbum musical temático ou ative o Mix Aleatório com todas as faixas liberadas no seu plano.
             </p>
           </DialogHeader>
 
-          {(() => {
-            const all = (availablePlaylists as any[]) || [];
-            const exclusivePlaylists = all.filter((p) => !p.isGlobal);
-            const globalPlaylists = all.filter((p) => !!p.isGlobal);
-
-            if (all.length === 0) {
-              return (
-                <div className="p-8 text-center text-xs text-[var(--dj-muted)] bg-black/20 rounded-lg border border-[var(--dj-border)]">
-                  Nenhuma playlist encontrada para esta conta. Peça ao administrador para criar ou liberar playlists para o seu plano.
+          <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+            {/* 🔀 Opção 1: Mix Aleatório de Todas as Músicas do Plano */}
+            <div
+              data-testid="modal-option-random-mix"
+              onClick={() => handleMusicalSwitch(0)}
+              className={`p-3.5 sm:p-4 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                isRandomPlanMix
+                  ? "bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-[0_0_16px_rgba(16,185,129,0.3)] ring-1 ring-emerald-400"
+                  : "bg-black/40 border-[var(--dj-border)] hover:border-emerald-500 hover:bg-emerald-500/10 text-[var(--dj-text)]"
+              }`}
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-xl bg-emerald-950/70 border border-emerald-500/40 flex items-center justify-center flex-none text-emerald-400 shadow-inner">
+                  <Shuffle className="w-6 h-6 sm:w-7 sm:h-7 animate-pulse" />
                 </div>
-              );
-            }
-
-            return (
-              <div className="space-y-4 max-h-[65vh] overflow-y-auto pr-1">
-                {exclusivePlaylists.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between px-1">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-[var(--dj-cyan)] flex items-center gap-1.5">
-                        <Building2 className="w-3.5 h-3.5" /> Playlists da sua Empresa / Loja
-                      </span>
-                      <span className="text-[10px] text-[var(--dj-muted)] font-mono">{exclusivePlaylists.length}</span>
-                    </div>
-                    <div className="grid gap-2">
-                      {exclusivePlaylists.map((pl) => {
-                        const isCurrent = pl.id === selectedPlaylistId;
-                        return (
-                          <div
-                            key={pl.id}
-                            data-testid={`modal-playlist-option-${pl.id}`}
-                            onClick={() => {
-                              handlePlaylistSwitch(pl.id);
-                              setPlaylistModalOpen(false);
-                            }}
-                            className={`p-3 rounded-lg border transition-all cursor-pointer flex items-center justify-between gap-3 ${
-                              isCurrent
-                                ? "bg-[var(--dj-cyan-glow)] border-[var(--dj-cyan)] text-[var(--dj-cyan)] shadow-[0_0_12px_rgba(0,240,255,0.25)]"
-                                : "bg-black/30 border-[var(--dj-border)] hover:border-[var(--dj-cyan)] text-[var(--dj-text)]"
-                            }`}
-                          >
-                            <div className="flex items-center gap-3 min-w-0">
-                              {pl.coverUrl ? (
-                                <img
-                                  src={pl.coverUrl}
-                                  alt={pl.name}
-                                  className="w-12 h-12 rounded-lg object-cover border border-[var(--dj-border)] flex-none shadow-md"
-                                />
-                              ) : (
-                                <div className="w-12 h-12 rounded-lg bg-[var(--dj-accent)] border border-[var(--dj-border)] flex items-center justify-center flex-none text-[var(--dj-cyan)]">
-                                  <Building2 className="w-6 h-6" />
-                                </div>
-                              )}
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-2">
-                                  <p className="font-bold text-xs sm:text-sm truncate">{pl.name}</p>
-                                  {pl.genre && (
-                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-[var(--dj-accent)] text-[var(--dj-cyan)] font-semibold uppercase">
-                                      {pl.genre}
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="text-[10px] text-[var(--dj-muted)]">{pl.itemCount} faixas musicais cadastradas</p>
-                              </div>
-                            </div>
-                            {isCurrent ? (
-                              <span className="px-3 py-1.5 rounded bg-[var(--dj-cyan)] text-[#060a14] text-[10px] font-extrabold uppercase tracking-wider flex-none shadow">
-                                Tocando Agora
-                              </span>
-                            ) : (
-                              <span className="px-3 py-1.5 rounded bg-[var(--dj-accent)] hover:bg-[var(--dj-cyan)] hover:text-[#060a14] text-[var(--dj-text)] text-[10px] font-bold uppercase tracking-wider flex-none transition-colors">
-                                Sintonizar ▶
-                              </span>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                    <p className="font-bold text-xs sm:text-sm text-emerald-300">
+                      🔀 Mix Aleatório de Todas as Músicas
+                    </p>
+                    <span className="text-[9px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-emerald-500/25 border border-emerald-500/40 text-emerald-300">
+                      Padrão / Recomendado
+                    </span>
                   </div>
-                )}
-
-                {globalPlaylists.length > 0 && (
-                  <div className="space-y-2 pt-2 border-t border-[var(--dj-border)]">
-                    <div className="flex items-center justify-between px-1">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-400 flex items-center gap-1.5">
-                        <Globe className="w-3.5 h-3.5" /> Acervo Geral (Disponível pelo seu Plano)
-                      </span>
-                      <span className="text-[10px] text-emerald-400/70 font-mono">{globalPlaylists.length}</span>
-                    </div>
-                    <div className="grid gap-2">
-                      {globalPlaylists.map((pl) => {
-                        const isCurrent = pl.id === selectedPlaylistId;
-                        return (
-                          <div
-                            key={pl.id}
-                            data-testid={`modal-playlist-option-${pl.id}`}
-                            onClick={() => {
-                              handlePlaylistSwitch(pl.id);
-                              setPlaylistModalOpen(false);
-                            }}
-                            className={`p-3 rounded-lg border transition-all cursor-pointer flex items-center justify-between gap-3 ${
-                              isCurrent
-                                ? "bg-emerald-500/15 border-emerald-500 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.25)]"
-                                : "bg-black/30 border-[var(--dj-border)] hover:border-emerald-500 text-[var(--dj-text)]"
-                            }`}
-                          >
-                            <div className="flex items-center gap-3 min-w-0">
-                              {pl.coverUrl ? (
-                                <img
-                                  src={pl.coverUrl}
-                                  alt={pl.name}
-                                  className="w-12 h-12 rounded-lg object-cover border border-emerald-500/30 flex-none shadow-md"
-                                />
-                              ) : (
-                                <div className="w-12 h-12 rounded-lg bg-emerald-950/50 border border-emerald-500/30 flex items-center justify-center flex-none text-emerald-400">
-                                  <ListMusic className="w-6 h-6" />
-                                </div>
-                              )}
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-2">
-                                  <p className="font-bold text-xs sm:text-sm truncate">{pl.name}</p>
-                                  {pl.genre && (
-                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-semibold uppercase">
-                                      {pl.genre}
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="text-[10px] text-[var(--dj-muted)]">{pl.itemCount} faixas musicais do acervo</p>
-                              </div>
-                            </div>
-                            {isCurrent ? (
-                              <span className="px-3 py-1.5 rounded bg-emerald-500 text-[#060a14] text-[10px] font-extrabold uppercase tracking-wider flex-none shadow">
-                                Tocando Agora
-                              </span>
-                            ) : (
-                              <span className="px-3 py-1.5 rounded bg-[var(--dj-accent)] hover:bg-emerald-500 hover:text-[#060a14] text-[var(--dj-text)] text-[10px] font-bold uppercase tracking-wider flex-none transition-colors">
-                                Sintonizar ▶
-                              </span>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+                  <p className="text-xs text-[var(--dj-muted)] leading-relaxed">
+                    Toca uma seleção dinâmica combinando todos os álbuns musicais liberados para seu plano, sem repetir faixas.
+                  </p>
+                </div>
               </div>
-            );
-          })()}
+
+              {isRandomPlanMix ? (
+                <span className="px-3.5 py-1.5 rounded-lg bg-emerald-500 text-[#060a14] text-[10px] sm:text-[11px] font-extrabold uppercase tracking-wider flex-none shadow-md">
+                  Sintonizado ✓
+                </span>
+              ) : (
+                <span className="px-3.5 py-1.5 rounded-lg bg-[var(--dj-accent)] hover:bg-emerald-500 hover:text-[#060a14] text-[var(--dj-text)] text-[10px] sm:text-[11px] font-bold uppercase tracking-wider flex-none transition-colors">
+                  Ativar Mix ▶
+                </span>
+              )}
+            </div>
+
+            {/* 🎵 Opção 2: Álbuns Temáticos Globais */}
+            <div className="space-y-2 pt-2 border-t border-[var(--dj-border)]">
+              <div className="flex items-center justify-between px-1">
+                <span className="text-[11px] uppercase font-bold tracking-wider text-emerald-400 flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5" /> Álbuns Temáticos Liberados ({musicalPlaylists.length})
+                </span>
+                <span className="text-[10px] text-emerald-400/60 font-mono">Disponíveis pelo plano</span>
+              </div>
+
+              {musicalPlaylists.length === 0 ? (
+                <div className="p-6 text-center text-xs text-[var(--dj-muted)] bg-black/20 rounded-lg border border-[var(--dj-border)]">
+                  Nenhum álbum temático adicional cadastrado no acervo.
+                </div>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {musicalPlaylists.map((pl) => {
+                    const isCurrent = !isRandomPlanMix && pl.id === selectedPlaylistId;
+                    return (
+                      <div
+                        key={pl.id}
+                        data-testid={`modal-musical-album-${pl.id}`}
+                        onClick={() => handleMusicalSwitch(pl.id)}
+                        className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                          isCurrent
+                            ? "bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.25)] ring-1 ring-emerald-400"
+                            : "bg-black/30 border-[var(--dj-border)] hover:border-emerald-500 text-[var(--dj-text)]"
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          {pl.coverUrl ? (
+                            <img
+                              src={pl.coverUrl}
+                              alt={pl.name}
+                              className="w-12 h-12 rounded-lg object-cover border border-emerald-500/30 flex-none shadow-md"
+                            />
+                          ) : (
+                            <div className="w-12 h-12 rounded-lg bg-emerald-950/50 border border-emerald-500/30 flex items-center justify-center flex-none text-emerald-400">
+                              <Disc3 className="w-6 h-6" />
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <p className="font-bold text-xs truncate">{pl.name}</p>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              {pl.genre && (
+                                <span className="text-[8px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-semibold uppercase">
+                                  {pl.genre}
+                                </span>
+                              )}
+                              <span className="text-[9px] text-[var(--dj-muted)]">
+                                {pl.itemCount} músicas
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {isCurrent ? (
+                          <span className="px-2.5 py-1 rounded bg-emerald-500 text-[#060a14] text-[9px] font-extrabold uppercase tracking-wider flex-none shadow">
+                            Tocando
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-1 rounded bg-[var(--dj-accent)] hover:bg-emerald-500 hover:text-[#060a14] text-[var(--dj-text)] text-[9px] font-bold uppercase tracking-wider flex-none transition-colors">
+                            Tocar ▶
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 📢 Modal de Seleção de Programação Comercial (Jingles & Locuções) */}
+      <Dialog open={commercialModalOpen} onOpenChange={setCommercialModalOpen}>
+        <DialogContent className="sm:max-w-xl bg-[#0d1322] border border-[var(--dj-border)] text-[var(--dj-text)] shadow-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-amber-400 text-base font-bold uppercase tracking-wider">
+              <Megaphone className="w-5 h-5 text-amber-400" />
+              <span>Programação de Comerciais & Locuções</span>
+            </DialogTitle>
+            <p className="text-xs text-[var(--dj-muted)]">
+              Selecione a grade de jingles e avisos autorizada para esta unidade/filial.
+            </p>
+          </DialogHeader>
+
+          <div className="space-y-3 max-h-[65vh] overflow-y-auto pr-1">
+            {commercialPlaylists.length === 0 ? (
+              <div className="p-6 text-center text-xs text-[var(--dj-muted)] bg-black/20 rounded-lg border border-[var(--dj-border)]">
+                Nenhuma grade comercial cadastrada ainda para sua loja.
+              </div>
+            ) : (
+              commercialPlaylists.map((pl) => {
+                const isCurrent = pl.id === selectedCommercialPlaylistId || (!selectedCommercialPlaylistId && pl.id === commercialPlaylists[0]?.id);
+                const hasBranchTarget = Array.isArray(pl.unitEmails) && pl.unitEmails.length > 0;
+
+                return (
+                  <div
+                    key={pl.id}
+                    data-testid={`modal-commercial-option-${pl.id}`}
+                    onClick={() => handleCommercialSwitch(pl.id)}
+                    className={`p-3.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                      isCurrent
+                        ? "bg-amber-500/20 border-amber-400 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.25)] ring-1 ring-amber-400"
+                        : "bg-black/30 border-[var(--dj-border)] hover:border-amber-400 text-[var(--dj-text)]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-11 h-11 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center flex-none text-amber-400">
+                        <Megaphone className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-bold text-xs sm:text-sm truncate">{pl.name}</p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className={`text-[9px] px-1.5 py-0.2 rounded font-semibold ${
+                            hasBranchTarget ? "bg-amber-500/20 text-amber-300" : "bg-blue-500/20 text-blue-300"
+                          }`}>
+                            {hasBranchTarget ? `📍 ${pl.unitEmails.length} filial(is)` : "🏢 Todas as filiais"}
+                          </span>
+                          <span className="text-[10px] text-[var(--dj-muted)]">
+                            {pl.itemCount} jingles / locuções
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {isCurrent ? (
+                      <span className="px-3 py-1.5 rounded bg-amber-500 text-[#060a14] text-[10px] font-extrabold uppercase tracking-wider flex-none shadow">
+                        Ativa Agora ✓
+                      </span>
+                    ) : (
+                      <span className="px-3 py-1.5 rounded bg-[var(--dj-accent)] hover:bg-amber-500 hover:text-[#060a14] text-[var(--dj-text)] text-[10px] font-bold uppercase tracking-wider flex-none transition-colors">
+                        Ativar ▶
+                      </span>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
         </DialogContent>
       </Dialog>
     </div>

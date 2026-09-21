@@ -402,6 +402,8 @@ export interface PlaybackQueue {
   coverUrl?: string;
   genre?: string;
   isGlobal?: boolean;
+  commercialPlaylistId?: number;
+  commercialPlaylistName?: string;
   currentIndex: number;
   playbackMode: PlaybackQueuePlaybackMode;
   jingleMode: PlaybackQueueJingleMode;

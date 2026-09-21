@@ -952,70 +952,38 @@ export async function handleStandaloneRequest(
     const clientIds = matchingClients.map((c) => c.id);
     const allPlaylists = await getAll<DBPlaylist>("playlists");
 
-    // Find active playlist: requested by ID or pick first suitable
+    const requestedCommercialPlaylistId = query.get("commercialPlaylistId") ? parseInt(query.get("commercialPlaylistId")!) : null;
+
+    // 1. Calculate accessible global playlists for this client's plan
+    const clientPlan = targetClient.plan || "standard";
+    const allowedGlobalIds = Array.isArray(targetClient.allowedGlobalPlaylistIds) ? targetClient.allowedGlobalPlaylistIds : null;
+    let globalPool = allPlaylists.filter((p) => p.isGlobal === true && p.active !== false);
+    if (allowedGlobalIds && allowedGlobalIds.length > 0) {
+      globalPool = globalPool.filter((p) => allowedGlobalIds.includes(p.id));
+    } else {
+      globalPool = globalPool.filter((p) => {
+        if (!p.allowedPlans || p.allowedPlans.includes("all")) return true;
+        return p.allowedPlans.includes(clientPlan);
+      });
+      if (clientPlan === "standard") globalPool = globalPool.slice(0, 10);
+      else if (clientPlan === "master") globalPool = globalPool.slice(0, 30);
+    }
+
+    // 2. Select active musical playlist
+    let isRandomPlanMix = requestedPlaylistId === 0;
     let activePlaylist: DBPlaylist | undefined = undefined;
-    if (requestedPlaylistId) {
+
+    if (requestedPlaylistId && requestedPlaylistId > 0) {
       activePlaylist = allPlaylists.find((p) => p.id === requestedPlaylistId && p.active !== false);
     }
 
-    if (!activePlaylist) {
-      // Pick first exclusive playlist for this unit, or random global playlist from authorized plan pool
-      const exclusive = allPlaylists.filter((p) => {
-        if (p.active === false || p.isGlobal) return false;
-        if (!clientIds.includes(p.clientId)) return false;
-        if (Array.isArray(p.unitEmails) && p.unitEmails.length > 0) {
-          return p.unitEmails.some((e) => e && e.trim().toLowerCase() === cleanParam);
-        }
-        return true;
-      });
-
-      if (exclusive.length > 0) {
-        activePlaylist = exclusive[0];
+    if (!activePlaylist && !isRandomPlanMix) {
+      // If none explicitly requested, default to random plan mix or first available
+      if (globalPool.length > 0) {
+        isRandomPlanMix = true;
       } else {
-        // Global fallback: select from accessible global playlists for this client's plan
-        const clientPlan = targetClient.plan || "standard";
-        const allowedGlobalIds = Array.isArray(targetClient.allowedGlobalPlaylistIds) ? targetClient.allowedGlobalPlaylistIds : null;
-        let globalPool = allPlaylists.filter((p) => p.isGlobal === true && p.active !== false);
-        if (allowedGlobalIds && allowedGlobalIds.length > 0) {
-          globalPool = globalPool.filter((p) => allowedGlobalIds.includes(p.id));
-        } else {
-          globalPool = globalPool.filter((p) => {
-            if (!p.allowedPlans || p.allowedPlans.includes("all")) return true;
-            return p.allowedPlans.includes(clientPlan);
-          });
-          if (clientPlan === "standard") globalPool = globalPool.slice(0, 10);
-          else if (clientPlan === "master") globalPool = globalPool.slice(0, 30);
-        }
-
-        if (globalPool.length > 0) {
-          // Select a random global playlist to keep music varied
-          const randomIndex = Math.floor(Math.random() * globalPool.length);
-          activePlaylist = globalPool[randomIndex];
-        } else {
-          activePlaylist = allPlaylists.find((p) => clientIds.includes(p.clientId) && p.active !== false);
-        }
+        activePlaylist = allPlaylists.find((p) => clientIds.includes(p.clientId) && p.active !== false);
       }
-    }
-
-    if (!activePlaylist) {
-      return {
-        status: 200,
-        data: {
-          clientId: targetClientId,
-          deviceId: 1,
-          playlistId: null,
-          currentIndex: 0,
-          playbackMode: targetClient.playbackMode || "sequential",
-          jingleMode: targetClient.jingleMode || "interval",
-          jingleInterval: targetClient.jingleInterval || 3,
-          jingleCount: targetClient.jingleCount ?? 1,
-          voiceoverCount: targetClient.voiceoverCount ?? 1,
-          jingleIntervalSeconds: targetClient.jingleIntervalSeconds || 900,
-          musicVolume: 1,
-          jingleVolume: 1,
-          items: [],
-        },
-      };
     }
 
     const allMedia = await getAll<DBMedia>("media");
@@ -1037,20 +1005,45 @@ export async function handleStandaloneRequest(
     );
 
     const allItems = await getAll<DBPlaylistItem>("playlistItems");
-    const playlistItems = allItems
-      .filter((i) => i.playlistId === activePlaylist!.id && i.active !== false)
-      .sort((a, b) => a.position - b.position);
 
-    // Get the store unit's client commercials (jingles and voiceovers)
-    // Filter by unit: if media.unitEmails is defined and non-empty, must match cleanParam
-    const clientCommercials = allMedia.filter((m) => {
-      if (m.clientId !== targetClientId) return false;
-      if (m.type !== "jingle" && m.type !== "voiceover") return false;
-      if (Array.isArray(m.unitEmails) && m.unitEmails.length > 0) {
-        return m.unitEmails.some((e) => e && e.trim().toLowerCase() === cleanParam);
+    // 3. Find client commercial playlist (Jingles & Locuções)
+    const clientPlaylists = allPlaylists.filter((p) => {
+      if (p.active === false || p.isGlobal) return false;
+      if (!clientIds.includes(p.clientId)) return false;
+      if (Array.isArray(p.unitEmails) && p.unitEmails.length > 0) {
+        return p.unitEmails.some((e) => e && e.trim().toLowerCase() === cleanParam);
       }
-      return true; // targeted to all units
+      return true;
     });
+
+    let activeCommercialPlaylist: DBPlaylist | undefined = undefined;
+    if (requestedCommercialPlaylistId) {
+      activeCommercialPlaylist = clientPlaylists.find((p) => p.id === requestedCommercialPlaylistId);
+    }
+    if (!activeCommercialPlaylist && clientPlaylists.length > 0) {
+      activeCommercialPlaylist = clientPlaylists[0];
+    }
+
+    // Commercial pool from active commercial playlist, or fallback to client commercials
+    let clientCommercials: DBMedia[] = [];
+    if (activeCommercialPlaylist) {
+      const commItems = allItems
+        .filter((i) => i.playlistId === activeCommercialPlaylist!.id && i.active !== false)
+        .sort((a, b) => a.position - b.position);
+      const commMediaMap = new Map(allMedia.map((m) => [m.id, m]));
+      clientCommercials = commItems
+        .map((i) => commMediaMap.get(i.mediaId))
+        .filter((m): m is DBMedia => m !== undefined && (m.type === "jingle" || m.type === "voiceover"));
+    } else {
+      clientCommercials = allMedia.filter((m) => {
+        if (m.clientId !== targetClientId) return false;
+        if (m.type !== "jingle" && m.type !== "voiceover") return false;
+        if (Array.isArray(m.unitEmails) && m.unitEmails.length > 0) {
+          return m.unitEmails.some((e) => e && e.trim().toLowerCase() === cleanParam);
+        }
+        return true;
+      });
+    }
 
     const formatMediaItem = (m: DBMedia, fallbackId: number) => {
       const memBlob = inMemoryMediaBlobs.get(m.id) || m.blob;
@@ -1067,59 +1060,54 @@ export async function handleStandaloneRequest(
       };
     };
 
-    let queueItems: any[] = [];
+    let musicItems: any[] = [];
 
-    if (activePlaylist.isGlobal) {
-      // Global playlist: music from global playlist
-      const musicItems = playlistItems
+    if (isRandomPlanMix) {
+      // Gather tracks from ALL global playlists in the plan
+      const globalIds = new Set(globalPool.map((p) => p.id));
+      const planItems = allItems.filter((i) => globalIds.has(i.playlistId) && i.active !== false);
+      const mediaMap = new Map(allMedia.map((m) => [m.id, m]));
+      const seenMedia = new Set<number>();
+      for (const item of planItems) {
+        if (seenMedia.has(item.mediaId)) continue;
+        const m = mediaMap.get(item.mediaId);
+        if (m) {
+          seenMedia.add(m.id);
+          musicItems.push(formatMediaItem(m, item.id));
+        }
+      }
+      // Shuffle tracks randomly
+      musicItems.sort(() => Math.random() - 0.5);
+    } else if (activePlaylist) {
+      const playlistItems = allItems
+        .filter((i) => i.playlistId === activePlaylist!.id && i.active !== false)
+        .sort((a, b) => a.position - b.position);
+      const mediaMap = new Map(allMedia.map((m) => [m.id, m]));
+      musicItems = playlistItems
         .map((item) => {
-          const m = allMedia.find((med) => med.id === item.mediaId);
+          const m = mediaMap.get(item.mediaId);
           return m ? formatMediaItem(m, item.id) : null;
         })
         .filter((it): it is NonNullable<typeof it> => it !== null);
-
-      // Inject the store unit's commercial pool (jingles & voiceovers)
-      const commercialItems = clientCommercials.map((m) => formatMediaItem(m, m.id));
-
-      queueItems = [...musicItems, ...commercialItems];
-    } else {
-      // Exclusive client playlist:
-      // Filter out any playlist item whose media is a commercial targeted to a DIFFERENT unit
-      const filteredPlaylistItems = playlistItems
-        .map((item) => {
-          const m = allMedia.find((med) => med.id === item.mediaId);
-          if (!m) return null;
-          if (m.type === "jingle" || m.type === "voiceover") {
-            if (Array.isArray(m.unitEmails) && m.unitEmails.length > 0) {
-              const matchesUnit = m.unitEmails.some((e) => e && e.trim().toLowerCase() === cleanParam);
-              if (!matchesUnit) return null;
-            }
-          }
-          return formatMediaItem(m, item.id);
-        })
-        .filter((it): it is NonNullable<typeof it> => it !== null);
-
-      // Also ensure all authorized client commercials are available in the queue for interval/time mode
-      const existingMediaIds = new Set(filteredPlaylistItems.map((it: any) => it.id));
-      const missingCommercials = clientCommercials
-        .filter((m) => !existingMediaIds.has(m.id))
-        .map((m) => formatMediaItem(m, m.id));
-
-      queueItems = [...filteredPlaylistItems, ...missingCommercials];
     }
+
+    const commercialItems = clientCommercials.map((m) => formatMediaItem(m, m.id));
+    const queueItems = [...musicItems, ...commercialItems];
 
     return {
       status: 200,
       data: {
         clientId: targetClientId,
         deviceId: 1,
-        playlistId: activePlaylist.id,
-        playlistName: activePlaylist.name,
-        coverUrl: activePlaylist.coverUrl,
-        genre: activePlaylist.genre,
-        isGlobal: !!activePlaylist.isGlobal,
+        playlistId: isRandomPlanMix ? 0 : activePlaylist?.id ?? 0,
+        playlistName: isRandomPlanMix ? "🔀 Mix Aleatório do Plano" : activePlaylist?.name ?? "Playlist Padrão",
+        coverUrl: isRandomPlanMix ? undefined : activePlaylist?.coverUrl,
+        genre: isRandomPlanMix ? "Mix Variado" : activePlaylist?.genre,
+        isGlobal: true,
+        commercialPlaylistId: activeCommercialPlaylist?.id ?? null,
+        commercialPlaylistName: activeCommercialPlaylist?.name ?? null,
         currentIndex: 0,
-        playbackMode: (activePlaylist?.playbackMode === "shuffle" || targetClient.playbackMode === "shuffle") ? "shuffle" : "sequential",
+        playbackMode: (activePlaylist?.playbackMode === "shuffle" || targetClient.playbackMode === "shuffle" || isRandomPlanMix) ? "shuffle" : "sequential",
         jingleMode: targetClient.jingleMode || "interval",
         jingleInterval: targetClient.jingleInterval || 3,
         jingleCount: targetClient.jingleCount ?? 1,
@@ -1873,6 +1861,22 @@ export async function handleStandaloneRequest(
 
         const id = await insert("media", { ...newMedia, url: cloudUrl });
         if (blob) inMemoryMediaBlobs.set(id, blob);
+
+        const playlistIdParam = body.get("playlistId") as string;
+        if (playlistIdParam) {
+          const plId = parseInt(playlistIdParam);
+          if (!isNaN(plId)) {
+            const allItems = await getAll<DBPlaylistItem>("playlistItems");
+            const currentItems = allItems.filter((i) => i.playlistId === plId);
+            const maxPos = currentItems.length > 0 ? Math.max(...currentItems.map((i) => i.position)) + 1 : 0;
+            await insert("playlistItems", {
+              playlistId: plId,
+              mediaId: id,
+              position: maxPos,
+              active: true,
+            });
+          }
+        }
 
         // Only attempt Firestore chunking for small files if cloud storage completely failed
         if (!cloudUrl && file.size < 2 * 1024 * 1024) {
