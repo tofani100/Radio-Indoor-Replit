@@ -183,8 +183,9 @@ export default function PlaylistDetailPage() {
     }
   }, [playlist?.items]);
 
-  const mediaParams = playlist?.clientId ? { clientId: playlist.clientId } : {};
-  const { data: allMedia } = useListMedia(mediaParams, { query: { queryKey: getListMediaQueryKey(mediaParams), enabled: !!playlist?.clientId } });
+  const isGlobalPl = (playlist as any)?.isGlobal;
+  const mediaParams = isGlobalPl ? {} : (playlist?.clientId ? { clientId: playlist.clientId } : {});
+  const { data: allMedia } = useListMedia(mediaParams, { query: { queryKey: getListMediaQueryKey(mediaParams), enabled: !!playlist } });
   const { data: clients } = useListClients({ query: { queryKey: getListClientsQueryKey() } });
   const currentClient = useMemo(
     () => clients?.find((c) => c.id === playlist?.clientId),
@@ -380,8 +381,11 @@ export default function PlaylistDetailPage() {
   const availableMedia = useMemo(() => {
     if (!allMedia || !playlist) return [];
     const term = search.trim().toLowerCase();
+    const isGlobalPlaylist = (playlist as any)?.isGlobal;
+
     return allMedia.filter((m) => {
-      if (m.clientId !== playlist.clientId) return false;
+      if (!isGlobalPlaylist && m.clientId !== playlist.clientId) return false;
+      if (isGlobalPlaylist && m.type !== "music") return false;
       if (existingMediaIds.has(m.id)) return false;
       if (typeFilter !== "all" && m.type !== typeFilter) return false;
       if (!term) return true;
@@ -394,13 +398,14 @@ export default function PlaylistDetailPage() {
 
   const typeCounts = useMemo(() => {
     if (!allMedia || !playlist) return { music: 0, jingle: 0, voiceover: 0 };
+    const isGlobalPlaylist = (playlist as any)?.isGlobal;
     const base = allMedia.filter(
-      (m) => m.clientId === playlist.clientId && !existingMediaIds.has(m.id),
+      (m) => (isGlobalPlaylist ? m.type === "music" : m.clientId === playlist.clientId) && !existingMediaIds.has(m.id),
     );
     return {
       music: base.filter((m) => m.type === "music").length,
       jingle: base.filter((m) => m.type === "jingle").length,
-      voiceover: base.filter((m) => m.type === "voiceover").length,
+      voiceover: base.filter((m) => (m.type as string) === "voiceover").length,
     };
   }, [allMedia, playlist, existingMediaIds]);
 

@@ -33,16 +33,24 @@ function hmsToSeconds(v: string): number {
   return parts[0] ?? 0;
 }
 
+type ClientUnit = { name: string; email: string };
+
 type Client = {
   id: number; name: string; email: string; masterEmail: string;
   authorizedEmails?: string[];
+  plan?: "standard" | "master" | "custom";
+  units?: ClientUnit[];
+  allowedGlobalPlaylistIds?: number[];
   playbackMode: string; jingleMode: string; jingleInterval?: number; jingleCount?: number; voiceoverCount?: number; jingleIntervalSeconds?: number;
-  active: boolean; deviceCount?: number; mediaCount?: number; createdAt: string;
+  active: boolean; deviceCount?: number; mediaCount?: number; playlistCount?: number; createdAt: string;
 };
 
 function getClientEmails(client?: Client): string[] {
   if (!client) return [];
   const set = new Set<string>();
+  if (client.units && Array.isArray(client.units)) {
+    client.units.forEach((u) => u?.email && set.add(u.email.trim().toLowerCase()));
+  }
   if (client.authorizedEmails) {
     client.authorizedEmails.forEach((e) => e && set.add(e.trim().toLowerCase()));
   }
@@ -61,6 +69,7 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
 
   const [form, setForm] = useState({
     name: client?.name ?? "",
+    plan: client?.plan ?? "standard",
     playbackMode: client?.playbackMode ?? "sequential",
     jingleMode: client?.jingleMode ?? "interval",
     jingleInterval: String(client?.jingleInterval ?? 3),
@@ -68,9 +77,21 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
     voiceoverCount: String(client?.voiceoverCount ?? 1),
     jingleIntervalSeconds: String(client?.jingleIntervalSeconds ?? 900),
   });
-  const [authorizedEmails, setAuthorizedEmails] = useState<string[]>(() => getClientEmails(client));
-  const [emailInput, setEmailInput] = useState("");
-  const [emailError, setEmailError] = useState<string | null>(null);
+
+  const [units, setUnits] = useState<ClientUnit[]>(() => {
+    if (client?.units && client.units.length > 0) return client.units;
+    const emails = getClientEmails(client);
+    return emails.map((em, idx) => ({
+      name: `Unidade ${idx + 1}`,
+      email: em,
+    }));
+  });
+
+  const [unitNameInput, setUnitNameInput] = useState("");
+  const [unitEmailInput, setUnitEmailInput] = useState("");
+  const [unitError, setUnitError] = useState<string | null>(null);
+  const [showBatchEmails, setShowBatchEmails] = useState(false);
+  const [batchEmailInput, setBatchEmailInput] = useState("");
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: getListClientsQueryKey() });
@@ -105,6 +126,8 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
     },
   });
 
+  const busy = create.isPending || update.isPending;
+
   const parseEmailTokens = (text: string): string[] => {
     return text
       .split(/[\r\n,;\s]+/)
@@ -112,77 +135,70 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
       .filter((t) => t.length > 0);
   };
 
-  const addEmail = (customInput?: string) => {
-    const raw = (customInput !== undefined ? customInput : emailInput).trim();
-    if (!raw) return;
+  const addUnit = () => {
+    const rawEmail = unitEmailInput.trim().toLowerCase();
+    const rawName = unitNameInput.trim() || `Unidade ${units.length + 1}`;
 
-    const tokens = parseEmailTokens(raw);
-    if (tokens.length === 0) return;
-
-    const newValidEmails: string[] = [];
-    const invalidTokens: string[] = [];
-
-    tokens.forEach((t) => {
-      if (!/^\S+@\S+\.\S+$/.test(t)) {
-        invalidTokens.push(t);
-      } else if (!authorizedEmails.includes(t) && !newValidEmails.includes(t)) {
-        newValidEmails.push(t);
-      }
-    });
-
-    if (invalidTokens.length > 0 && newValidEmails.length === 0) {
-      setEmailError(`E-mail(s) inválido(s): ${invalidTokens.slice(0, 3).join(", ")}`);
+    if (!rawEmail) {
+      setUnitError("Informe o e-mail da unidade/filial");
+      return;
+    }
+    if (!/^\S+@\S+\.\S+$/.test(rawEmail)) {
+      setUnitError("E-mail com formato inválido");
+      return;
+    }
+    if (units.some((u) => u.email.toLowerCase() === rawEmail)) {
+      setUnitError("Esta unidade com este e-mail já está cadastrada");
       return;
     }
 
-    if (newValidEmails.length > 0) {
-      setAuthorizedEmails([...authorizedEmails, ...newValidEmails]);
-      setEmailInput("");
-      setEmailError(
-        invalidTokens.length > 0
-          ? `${newValidEmails.length} adicionado(s). Inválido(s): ${invalidTokens.join(", ")}`
-          : null
-      );
+    setUnits([...units, { name: rawName, email: rawEmail }]);
+    setUnitNameInput("");
+    setUnitEmailInput("");
+    setUnitError(null);
+  };
+
+  const removeUnit = (targetEmail: string) => {
+    setUnits(units.filter((u) => u.email.toLowerCase() !== targetEmail.toLowerCase()));
+  };
+
+  const addBatchEmails = () => {
+    const tokens = parseEmailTokens(batchEmailInput);
+    if (tokens.length === 0) return;
+
+    const existingEmails = new Set(units.map((u) => u.email.toLowerCase()));
+    const newUnits: ClientUnit[] = [];
+    tokens.forEach((t) => {
+      if (/^\S+@\S+\.\S+$/.test(t) && !existingEmails.has(t)) {
+        existingEmails.add(t);
+        const prefix = t.split("@")[0] || `Loja`;
+        const cleanName = prefix.charAt(0).toUpperCase() + prefix.slice(1);
+        newUnits.push({ name: `Loja ${cleanName}`, email: t });
+      }
+    });
+
+    if (newUnits.length > 0) {
+      setUnits([...units, ...newUnits]);
+      setBatchEmailInput("");
+      setShowBatchEmails(false);
+      setUnitError(null);
     } else {
-      setEmailInput("");
-      setEmailError("E-mail(s) já estavam adicionados");
-    }
-  };
-
-  const handlePasteEmails = (e: React.ClipboardEvent<HTMLInputElement>) => {
-    const text = e.clipboardData.getData("text");
-    if (!text) return;
-    const tokens = parseEmailTokens(text);
-    if (tokens.length > 1 || text.includes("\n") || text.includes(",") || text.includes(";")) {
-      e.preventDefault();
-      addEmail(text);
-    }
-  };
-
-  const removeEmail = (target: string) => {
-    setAuthorizedEmails(authorizedEmails.filter((e) => e !== target));
-  };
-
-  const handleEmailKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" || e.key === "," || e.key === ";") {
-      e.preventDefault();
-      addEmail();
-    } else if (e.key === "Backspace" && !emailInput && authorizedEmails.length > 0) {
-      removeEmail(authorizedEmails[authorizedEmails.length - 1]!);
+      setUnitError("Nenhum e-mail novo válido encontrado.");
     }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (emailInput.trim()) {
-      addEmail();
-    }
+
+    const authorizedEmails = units.map((u) => u.email.toLowerCase());
 
     const payload = {
       name: form.name.trim(),
+      plan: form.plan as "standard" | "master" | "custom",
+      units,
+      authorizedEmails,
       email: authorizedEmails[0] || undefined,
       masterEmail: authorizedEmails[0] || undefined,
-      authorizedEmails,
       playbackMode: form.playbackMode as "sequential" | "shuffle",
       jingleMode: form.jingleMode as "ordered" | "interval" | "time",
       jingleInterval: parseInt(form.jingleInterval) || 3,
@@ -198,86 +214,142 @@ function ClientModal({ open, onClose, client }: { open: boolean; onClose: () => 
     }
   };
 
-  const busy = create.isPending || update.isPending;
-
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{client ? "Editar Cliente" : "Novo Cliente"}</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <Label>Nome do Cliente</Label>
+            <Label>Nome da Empresa / Rede</Label>
             <Input
               data-testid="input-name"
-              placeholder="Ex: Pefisa, Pernambucanas..."
+              placeholder="Ex: Supermercados Estrela, Pefisa..."
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
               required
             />
           </div>
 
-          <div>
-            <Label className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <Mail className="w-3.5 h-3.5 text-primary" /> E-mails com Acesso ao Player ({authorizedEmails.length})
-              </span>
+          {/* Plano do Cliente */}
+          <div className="p-3 bg-muted/30 border border-border rounded-lg space-y-2">
+            <Label className="font-semibold text-xs text-foreground uppercase tracking-wide">
+              Plano do Cliente & Acervo Geral
             </Label>
-            <div
-              data-testid="authorized-emails-list"
-              className="mt-1 flex flex-wrap gap-1.5 p-2 min-h-[46px] rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring"
-            >
-              {authorizedEmails.map((mail) => (
-                <span
-                  key={mail}
-                  data-testid={`authorized-email-${mail}`}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary/10 text-primary text-xs font-medium"
-                >
-                  {mail}
-                  <button
-                    type="button"
-                    aria-label={`Remover ${mail}`}
-                    data-testid={`button-remove-email-${mail}`}
-                    onClick={() => removeEmail(mail)}
-                    className="hover:text-destructive transition-colors ml-0.5"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </span>
-              ))}
-              <div className="flex-1 flex items-center min-w-[160px] gap-1">
-                <input
-                  data-testid="input-authorized-email"
-                  type="text"
-                  value={emailInput}
-                  onChange={(e) => { setEmailInput(e.target.value); setEmailError(null); }}
-                  onKeyDown={handleEmailKeyDown}
-                  onPaste={handlePasteEmails}
-                  onBlur={() => emailInput.trim() && addEmail()}
-                  placeholder={authorizedEmails.length === 0 ? "Cole ou digite e-mails (quebra de linha, vírgula ou espaço)..." : "+ adicionar outro ou colar lista..."}
-                  className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
-                />
-                {emailInput.trim() && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    className="h-6 px-2 text-xs text-primary font-semibold"
-                    onClick={() => addEmail()}
-                  >
-                    Adicionar
-                  </Button>
-                )}
-              </div>
+            <Select value={form.plan} onValueChange={(v) => setForm({ ...form, plan: v as "standard" | "master" | "custom" })}>
+              <SelectTrigger data-testid="select-client-plan">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="standard">Plano Standard (Até 10 Playlists do Acervo Geral)</SelectItem>
+                <SelectItem value="master">Plano Master (Até 30 Playlists do Acervo Geral)</SelectItem>
+                <SelectItem value="custom">Plano Personalizado (Seleção customizada)</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">
+              {form.plan === "master"
+                ? "O cliente tem acesso expandido ao acervo com até 30 playlists globais de música."
+                : form.plan === "custom"
+                ? "Permite liberar playlists específicas personalizadas do acervo para o cliente."
+                : "Acesso básico ao acervo com até 10 playlists globais recomendadas."}
+            </p>
+          </div>
+
+          {/* Gestão Estruturada de Unidades / Filiais */}
+          <div className="p-3 bg-muted/30 border border-border rounded-lg space-y-3">
+            <div className="flex items-center justify-between">
+              <Label className="font-semibold text-xs text-foreground uppercase tracking-wide flex items-center gap-1.5">
+                <Mail className="w-3.5 h-3.5 text-primary" /> Unidades / Filiais & Terminais ({units.length})
+              </Label>
+              <button
+                type="button"
+                onClick={() => setShowBatchEmails(!showBatchEmails)}
+                className="text-xs text-primary hover:underline"
+              >
+                {showBatchEmails ? "Fechar colagem rápida" : "Colar múltiplos e-mails"}
+              </button>
             </div>
-            {emailError ? (
-              <p className="text-[11px] text-destructive mt-1">{emailError}</p>
+
+            {showBatchEmails ? (
+              <div className="space-y-2 bg-background p-2.5 rounded border border-border">
+                <p className="text-[11px] text-muted-foreground">
+                  Cole uma lista de e-mails de lojas (separados por linhas, vírgulas ou espaços):
+                </p>
+                <textarea
+                  rows={3}
+                  value={batchEmailInput}
+                  onChange={(e) => setBatchEmailInput(e.target.value)}
+                  placeholder="loja1@mercado.com&#10;loja2@mercado.com&#10;shopping@mercado.com"
+                  className="w-full text-xs p-2 rounded border border-input bg-transparent font-mono outline-none"
+                />
+                <div className="flex justify-end gap-2">
+                  <Button type="button" size="sm" variant="ghost" onClick={() => setShowBatchEmails(false)}>
+                    Cancelar
+                  </Button>
+                  <Button type="button" size="sm" onClick={addBatchEmails}>
+                    Importar E-mails
+                  </Button>
+                </div>
+              </div>
             ) : (
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Dica: você pode colar uma lista inteira de e-mails de uma só vez (linhas separadas, vírgulas ou espaços).
-              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                <div className="sm:col-span-6">
+                  <Input
+                    placeholder="Nome da Filial (ex: Loja 01 - Shopping)"
+                    value={unitNameInput}
+                    onChange={(e) => setUnitNameInput(e.target.value)}
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div className="sm:col-span-4">
+                  <Input
+                    placeholder="E-mail de acesso"
+                    type="email"
+                    value={unitEmailInput}
+                    onChange={(e) => setUnitEmailInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addUnit())}
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <Button type="button" size="sm" className="h-8 w-full text-xs" onClick={addUnit}>
+                    + Loja
+                  </Button>
+                </div>
+              </div>
             )}
+
+            {unitError && <p className="text-[11px] text-destructive">{unitError}</p>}
+
+            {/* Lista de Unidades */}
+            <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+              {units.length === 0 ? (
+                <p className="text-xs text-muted-foreground italic py-1">
+                  Nenhuma unidade cadastrada. Adicione pelo menos um e-mail de terminal para login no Player.
+                </p>
+              ) : (
+                units.map((u) => (
+                  <div
+                    key={u.email}
+                    className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-background border border-border text-xs"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="font-semibold text-foreground mr-2">{u.name}</span>
+                      <span className="font-mono text-muted-foreground text-[11px]">({u.email})</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeUnit(u.email)}
+                      className="text-muted-foreground hover:text-destructive p-1"
+                      title="Remover filial"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -395,11 +467,12 @@ export default function ClientsPage() {
 
       <div className="bg-card border border-card-border rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[640px]">
+        <table className="w-full text-sm min-w-[720px]">
           <thead>
             <tr className="border-b border-card-border bg-muted/30">
               <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Nome</th>
-              <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">E-mails Autorizados</th>
+              <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Plano</th>
+              <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Filiais / Terminais</th>
               <th className="text-center px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Dispositivos</th>
               <th className="text-center px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Mídias</th>
               <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Modo</th>
@@ -409,29 +482,52 @@ export default function ClientsPage() {
           </thead>
           <tbody className="divide-y divide-card-border">
             {isLoading && [...Array(4)].map((_, i) => (
-              <tr key={i}><td colSpan={7} className="px-5 py-4"><div className="h-4 bg-muted animate-pulse rounded" /></td></tr>
+              <tr key={i}><td colSpan={8} className="px-5 py-4"><div className="h-4 bg-muted animate-pulse rounded" /></td></tr>
             ))}
             {Array.isArray(clients) && clients.map((c) => {
               const allEmails = getClientEmails(c as Client);
+              const clientUnits: ClientUnit[] = (c as any).units && (c as any).units.length > 0
+                ? (c as any).units
+                : allEmails.map((em, idx) => ({ name: `Loja ${idx + 1}`, email: em }));
+              const plan = (c as any).plan || "standard";
+
               return (
               <tr key={c.id} data-testid={`row-client-${c.id}`} className="hover:bg-muted/20 transition-colors">
-                <td className="px-5 py-4 font-medium text-foreground">{c.name}</td>
+                <td className="px-5 py-4 font-medium text-foreground">
+                  <div>{c.name}</div>
+                  <span className="text-[11px] text-muted-foreground">{(c as any).playlistCount ?? 0} playlists exclusivas</span>
+                </td>
                 <td className="px-5 py-4">
-                  {allEmails.length > 0 ? (
+                  {plan === "master" ? (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-purple-500/15 text-purple-600 border border-purple-500/30">
+                      Master (30 Globais)
+                    </span>
+                  ) : plan === "custom" ? (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-500/15 text-blue-600 border border-blue-500/30">
+                      Personalizado
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30">
+                      Standard (10 Globais)
+                    </span>
+                  )}
+                </td>
+                <td className="px-5 py-4">
+                  {clientUnits.length > 0 ? (
                     <div className="flex flex-wrap gap-1 items-center max-w-sm">
-                      {allEmails.slice(0, 3).map((em) => (
-                        <span key={em} className="text-xs px-2 py-0.5 rounded bg-muted text-foreground border border-border">
-                          {em}
+                      {clientUnits.slice(0, 2).map((u) => (
+                        <span key={u.email} className="text-xs px-2 py-0.5 rounded bg-muted text-foreground border border-border" title={u.email}>
+                          <strong>{u.name}</strong> <span className="text-[10px] text-muted-foreground">({u.email.split("@")[0]})</span>
                         </span>
                       ))}
-                      {allEmails.length > 3 && (
-                        <span title={allEmails.slice(3).join(", ")} className="text-xs text-muted-foreground px-1 font-medium">
-                          +{allEmails.length - 3} mais
+                      {clientUnits.length > 2 && (
+                        <span title={clientUnits.slice(2).map((u) => `${u.name} (${u.email})`).join(", ")} className="text-xs text-muted-foreground px-1 font-medium">
+                          +{clientUnits.length - 2} mais
                         </span>
                       )}
                     </div>
                   ) : (
-                    <span className="text-xs text-muted-foreground italic">Nenhum e-mail adicionado</span>
+                    <span className="text-xs text-muted-foreground italic">Nenhuma filial cadastrada</span>
                   )}
                 </td>
                 <td className="px-5 py-4 text-center">

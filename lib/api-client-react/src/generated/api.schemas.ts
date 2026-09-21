@@ -72,6 +72,12 @@ export interface Client {
   createdAt: string;
   deviceCount?: number;
   mediaCount?: number;
+  playlistCount?: number;
+  plan?: "standard" | "master" | "custom";
+  units?: { name: string; email: string }[];
+  allowedGlobalPlaylistIds?: number[];
+  jingleCount?: number;
+  voiceoverCount?: number;
 }
 
 export type CreateClientBodyPlaybackMode =
@@ -93,14 +99,19 @@ export const CreateClientBodyJingleMode = {
 
 export interface CreateClientBody {
   name: string;
-  email: string;
-  masterEmail: string;
+  email?: string;
+  masterEmail?: string;
   authorizedEmails?: string[];
-  password: string;
+  password?: string;
   playbackMode?: CreateClientBodyPlaybackMode;
   jingleMode?: CreateClientBodyJingleMode;
   jingleInterval?: number;
   jingleIntervalSeconds?: number;
+  jingleCount?: number;
+  voiceoverCount?: number;
+  plan?: "standard" | "master" | "custom";
+  units?: { name: string; email: string }[];
+  allowedGlobalPlaylistIds?: number[];
 }
 
 export type UpdateClientBodyPlaybackMode =
@@ -129,6 +140,11 @@ export interface UpdateClientBody {
   jingleMode?: UpdateClientBodyJingleMode;
   jingleInterval?: number;
   jingleIntervalSeconds?: number;
+  jingleCount?: number;
+  voiceoverCount?: number;
+  plan?: "standard" | "master" | "custom";
+  units?: { name: string; email: string }[];
+  allowedGlobalPlaylistIds?: number[];
   active?: boolean;
 }
 
@@ -139,6 +155,7 @@ export const DeviceStatusProperty = {
   pending: "pending",
   active: "active",
   blocked: "blocked",
+  duplicate: "duplicate",
 } as const;
 
 export interface Device {
@@ -165,6 +182,7 @@ export const DeviceStatusStatus = {
   pending: "pending",
   active: "active",
   blocked: "blocked",
+  duplicate: "duplicate",
 } as const;
 
 export interface DeviceStatus {
@@ -184,6 +202,7 @@ export type MediaItemType = (typeof MediaItemType)[keyof typeof MediaItemType];
 export const MediaItemType = {
   music: "music",
   jingle: "jingle",
+  voiceover: "voiceover",
 } as const;
 
 export interface MediaItem {
@@ -409,6 +428,7 @@ export type PlaybackLogEntryMediaType =
 export const PlaybackLogEntryMediaType = {
   music: "music",
   jingle: "jingle",
+  voiceover: "voiceover",
 } as const;
 
 export interface PlaybackLogEntry {
@@ -462,6 +482,7 @@ export type TopMediaItemType =
 export const TopMediaItemType = {
   music: "music",
   jingle: "jingle",
+  voiceover: "voiceover",
 } as const;
 
 export interface TopMediaItem {
@@ -478,6 +499,7 @@ export type ActivityItemMediaType =
 export const ActivityItemMediaType = {
   music: "music",
   jingle: "jingle",
+  voiceover: "voiceover",
 } as const;
 
 export interface ActivityItem {
@@ -513,6 +535,7 @@ export type ListMediaType = (typeof ListMediaType)[keyof typeof ListMediaType];
 export const ListMediaType = {
   music: "music",
   jingle: "jingle",
+  voiceover: "voiceover",
 } as const;
 
 export type DeleteMediaBatchBody = {

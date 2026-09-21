@@ -47,6 +47,9 @@ export interface DBClient {
   jingleCount?: number;
   voiceoverCount?: number;
   jingleIntervalSeconds: number;
+  plan?: "standard" | "master" | "custom";
+  units?: { name: string; email: string }[];
+  allowedGlobalPlaylistIds?: number[];
   active: boolean;
   createdAt: string;
 }
@@ -58,6 +61,9 @@ export interface DBPlaylist {
   playbackMode: string;
   active: boolean;
   createdAt: string;
+  isGlobal?: boolean;
+  allowedPlans?: string[];
+  unitEmails?: string[];
 }
 
 export interface DBPlaylistItem {
@@ -82,6 +88,7 @@ export interface DBMedia {
   url?: string;
   blob?: Blob;
   chunkCount?: number;
+  unitEmails?: string[];
 }
 
 export interface DBDevice {
@@ -636,6 +643,13 @@ export function extractClientAuthorizedEmails(client: DBClient): string[] {
       if (typeof e === "string" && e.trim()) set.add(e.trim().toLowerCase());
     });
   }
+  if (Array.isArray(client.units)) {
+    client.units.forEach((u) => {
+      if (u && typeof u.email === "string" && u.email.trim()) {
+        set.add(u.email.trim().toLowerCase());
+      }
+    });
+  }
   if (client.masterEmail && typeof client.masterEmail === "string") {
     set.add(client.masterEmail.trim().toLowerCase());
   }
@@ -931,23 +945,29 @@ export async function handleStandaloneRequest(
       };
     }
 
+    const targetClient = matchingClients[0]!;
+    const targetClientId = targetClient.id;
     const clientIds = matchingClients.map((c) => c.id);
     const allPlaylists = await getAll<DBPlaylist>("playlists");
-    const clientPlaylists = allPlaylists.filter((p) => clientIds.includes(p.clientId) && p.active);
 
-    let activePlaylist = requestedPlaylistId
-      ? clientPlaylists.find((p) => p.id === requestedPlaylistId)
-      : clientPlaylists[0];
-
-    if (!activePlaylist && clientPlaylists.length > 0) {
-      activePlaylist = clientPlaylists[0];
+    // Find active playlist: requested by ID or pick first suitable
+    let activePlaylist: DBPlaylist | undefined = undefined;
+    if (requestedPlaylistId) {
+      activePlaylist = allPlaylists.find((p) => p.id === requestedPlaylistId && p.active !== false);
     }
 
-    const targetClient = activePlaylist
-      ? matchingClients.find((c) => c.id === activePlaylist.clientId) || matchingClients[0]!
-      : matchingClients[0]!;
-
-    const targetClientId = targetClient.id;
+    if (!activePlaylist) {
+      // Pick first exclusive playlist for this unit, or first global playlist
+      const exclusive = allPlaylists.find((p) => {
+        if (p.active === false || p.isGlobal) return false;
+        if (!clientIds.includes(p.clientId)) return false;
+        if (Array.isArray(p.unitEmails) && p.unitEmails.length > 0) {
+          return p.unitEmails.some((e) => e && e.trim().toLowerCase() === cleanParam);
+        }
+        return true;
+      });
+      activePlaylist = exclusive || allPlaylists.find((p) => p.isGlobal === true && p.active !== false) || allPlaylists.find((p) => clientIds.includes(p.clientId) && p.active !== false);
+    }
 
     if (!activePlaylist) {
       return {
@@ -988,42 +1008,76 @@ export async function handleStandaloneRequest(
       })
     );
 
-    const clientMedia = allMedia.filter((m) => m.clientId === targetClientId);
     const allItems = await getAll<DBPlaylistItem>("playlistItems");
     const playlistItems = allItems
-      .filter((i) => i.playlistId === activePlaylist.id && i.active !== false)
+      .filter((i) => i.playlistId === activePlaylist!.id && i.active !== false)
       .sort((a, b) => a.position - b.position);
 
-    let queueItems: any[] = [];
-    if (playlistItems.length > 0) {
-      queueItems = playlistItems.map((item) => {
-        const m = allMedia.find((med) => med.id === item.mediaId);
-        const memBlob = m ? inMemoryMediaBlobs.get(m.id) || m.blob : undefined;
-        const audioUrl = m ? getMediaBlobUrl(m.id, memBlob, m.url) : "";
-        return {
-          id: m?.id || item.id,
-          title: m?.title || "Áudio",
-          artist: m?.artist || "",
-          type: m?.type || "music",
-          filename: m?.title || "audio.mp3",
-          url: audioUrl,
-          duration: m?.duration || 180,
-          clientId: targetClientId,
-          createdAt: m?.createdAt || new Date().toISOString(),
-        };
-      });
-    } else if (clientMedia.length > 0) {
-      queueItems = clientMedia.map((m) => ({
-        id: m.id,
-        title: m.title,
+    // Get the store unit's client commercials (jingles and voiceovers)
+    // Filter by unit: if media.unitEmails is defined and non-empty, must match cleanParam
+    const clientCommercials = allMedia.filter((m) => {
+      if (m.clientId !== targetClientId) return false;
+      if (m.type !== "jingle" && m.type !== "voiceover") return false;
+      if (Array.isArray(m.unitEmails) && m.unitEmails.length > 0) {
+        return m.unitEmails.some((e) => e && e.trim().toLowerCase() === cleanParam);
+      }
+      return true; // targeted to all units
+    });
+
+    const formatMediaItem = (m: DBMedia, fallbackId: number) => {
+      const memBlob = inMemoryMediaBlobs.get(m.id) || m.blob;
+      return {
+        id: m.id || fallbackId,
+        title: m.title || "Áudio",
         artist: m.artist || "",
-        type: m.type,
-        filename: m.title,
-        url: getMediaBlobUrl(m.id, inMemoryMediaBlobs.get(m.id) || m.blob, m.url),
+        type: m.type || "music",
+        filename: m.title || "audio.mp3",
+        url: getMediaBlobUrl(m.id, memBlob, m.url),
         duration: m.duration || 180,
         clientId: targetClientId,
-        createdAt: m.createdAt,
-      }));
+        createdAt: m.createdAt || new Date().toISOString(),
+      };
+    };
+
+    let queueItems: any[] = [];
+
+    if (activePlaylist.isGlobal) {
+      // Global playlist: music from global playlist
+      const musicItems = playlistItems
+        .map((item) => {
+          const m = allMedia.find((med) => med.id === item.mediaId);
+          return m ? formatMediaItem(m, item.id) : null;
+        })
+        .filter((it): it is NonNullable<typeof it> => it !== null);
+
+      // Inject the store unit's commercial pool (jingles & voiceovers)
+      const commercialItems = clientCommercials.map((m) => formatMediaItem(m, m.id));
+
+      queueItems = [...musicItems, ...commercialItems];
+    } else {
+      // Exclusive client playlist:
+      // Filter out any playlist item whose media is a commercial targeted to a DIFFERENT unit
+      const filteredPlaylistItems = playlistItems
+        .map((item) => {
+          const m = allMedia.find((med) => med.id === item.mediaId);
+          if (!m) return null;
+          if (m.type === "jingle" || m.type === "voiceover") {
+            if (Array.isArray(m.unitEmails) && m.unitEmails.length > 0) {
+              const matchesUnit = m.unitEmails.some((e) => e && e.trim().toLowerCase() === cleanParam);
+              if (!matchesUnit) return null;
+            }
+          }
+          return formatMediaItem(m, item.id);
+        })
+        .filter((it): it is NonNullable<typeof it> => it !== null);
+
+      // Also ensure all authorized client commercials are available in the queue for interval/time mode
+      const existingMediaIds = new Set(filteredPlaylistItems.map((it: any) => it.id));
+      const missingCommercials = clientCommercials
+        .filter((m) => !existingMediaIds.has(m.id))
+        .map((m) => formatMediaItem(m, m.id));
+
+      queueItems = [...filteredPlaylistItems, ...missingCommercials];
     }
 
     return {
@@ -1032,6 +1086,7 @@ export async function handleStandaloneRequest(
         clientId: targetClientId,
         deviceId: 1,
         playlistId: activePlaylist.id,
+        isGlobal: !!activePlaylist.isGlobal,
         currentIndex: 0,
         playbackMode: (activePlaylist?.playbackMode === "shuffle" || targetClient.playbackMode === "shuffle") ? "shuffle" : "sequential",
         jingleMode: targetClient.jingleMode || "interval",
@@ -1070,25 +1125,69 @@ export async function handleStandaloneRequest(
       };
     }
 
+    const targetClient = matchingClients[0]!;
     const clientIds = matchingClients.map((c) => c.id);
     const clientMap = new Map(matchingClients.map((c) => [c.id, c.name]));
     const allPlaylists = await getAll<DBPlaylist>("playlists");
-    const matchedPlaylists = allPlaylists.filter((p) => clientIds.includes(p.clientId) && p.active);
     const allItems = await getAll<DBPlaylistItem>("playlistItems");
 
-    const result = matchedPlaylists.map((p) => {
+    // 1. Client Exclusive Playlists (filtered by unitEmails if configured)
+    const exclusivePlaylists = allPlaylists.filter((p) => {
+      if (p.active === false || p.isGlobal) return false;
+      if (!clientIds.includes(p.clientId)) return false;
+      if (Array.isArray(p.unitEmails) && p.unitEmails.length > 0) {
+        return p.unitEmails.some((e) => e && e.trim().toLowerCase() === cleanParam);
+      }
+      return true;
+    });
+
+    // 2. Global Playlists (Acervo Geral)
+    const clientPlan = targetClient.plan || "standard";
+    const allowedGlobalIds = Array.isArray(targetClient.allowedGlobalPlaylistIds) ? targetClient.allowedGlobalPlaylistIds : null;
+
+    const allGlobalPlaylists = allPlaylists.filter((p) => p.isGlobal === true && p.active !== false);
+
+    let accessibleGlobalPlaylists = allGlobalPlaylists;
+    if (allowedGlobalIds && allowedGlobalIds.length > 0) {
+      accessibleGlobalPlaylists = allGlobalPlaylists.filter((p) => allowedGlobalIds.includes(p.id));
+    } else {
+      accessibleGlobalPlaylists = allGlobalPlaylists.filter((p) => {
+        if (!p.allowedPlans || p.allowedPlans.includes("all")) return true;
+        return p.allowedPlans.includes(clientPlan);
+      });
+      if (clientPlan === "standard") {
+        accessibleGlobalPlaylists = accessibleGlobalPlaylists.slice(0, 10);
+      } else if (clientPlan === "master") {
+        accessibleGlobalPlaylists = accessibleGlobalPlaylists.slice(0, 30);
+      }
+    }
+
+    const exclusiveResult = exclusivePlaylists.map((p) => {
       const clientName = clientMap.get(p.clientId) || "";
       return {
         id: p.id,
         name: matchingClients.length > 1 ? `${clientName} — ${p.name}` : p.name,
         clientName,
-        itemCount: allItems.filter((i) => i.playlistId === p.id).length,
+        itemCount: allItems.filter((i) => i.playlistId === p.id && i.active !== false).length,
         active: p.active,
         clientId: p.clientId,
+        isGlobal: false,
+        category: "exclusive" as const,
       };
     });
 
-    return { status: 200, data: result };
+    const globalResult = accessibleGlobalPlaylists.map((p) => ({
+      id: p.id,
+      name: p.name,
+      clientName: "Acervo Geral",
+      itemCount: allItems.filter((i) => i.playlistId === p.id && i.active !== false).length,
+      active: p.active,
+      clientId: p.clientId,
+      isGlobal: true,
+      category: "global" as const,
+    }));
+
+    return { status: 200, data: [...exclusiveResult, ...globalResult] };
   }
 
   if (path === "/api/devices/heartbeat" || path === "/api/playback/heartbeat" || path === "/api/playback/log") {
@@ -1260,8 +1359,11 @@ export async function handleStandaloneRequest(
 
     const enriched = clients.map((c) => ({
       ...c,
+      plan: c.plan || "standard",
+      units: Array.isArray(c.units) ? c.units : [],
+      allowedGlobalPlaylistIds: Array.isArray(c.allowedGlobalPlaylistIds) ? c.allowedGlobalPlaylistIds : [],
       authorizedEmails: Array.isArray(c.authorizedEmails) ? c.authorizedEmails : [],
-      playlistCount: allPlaylists.filter((p) => p.clientId === c.id).length,
+      playlistCount: allPlaylists.filter((p) => p.clientId === c.id && !p.isGlobal).length,
       mediaCount: allMedia.filter((m) => m.clientId === c.id).length,
       deviceCount: 1,
     }));
@@ -1270,9 +1372,25 @@ export async function handleStandaloneRequest(
   }
 
   if (path === "/api/clients" && method === "POST") {
-    const { name, email, masterEmail, password, playbackMode, jingleMode, jingleInterval, jingleCount, voiceoverCount, jingleIntervalSeconds, authorizedEmails } = body || {};
-    const validEmails = Array.isArray(authorizedEmails) ? authorizedEmails.map((e) => String(e).trim().toLowerCase()).filter(Boolean) : [];
-    const cleanEmail = (email || validEmails[0] || `client-${Date.now()}@cliente.radioindoor.com`).trim().toLowerCase();
+    const {
+      name, email, masterEmail, password, playbackMode, jingleMode,
+      jingleInterval, jingleCount, voiceoverCount, jingleIntervalSeconds,
+      authorizedEmails, plan, units, allowedGlobalPlaylistIds,
+    } = body || {};
+
+    const clientUnits: { name: string; email: string }[] = Array.isArray(units)
+      ? units.filter((u: any) => u && typeof u.email === "string" && u.email.trim())
+      : [];
+
+    const unitEmails = clientUnits.map((u) => u.email.trim().toLowerCase());
+    const validEmails = Array.isArray(authorizedEmails)
+      ? authorizedEmails.map((e) => String(e).trim().toLowerCase()).filter(Boolean)
+      : unitEmails;
+
+    // Combine any unit emails with authorizedEmails
+    const allAuthEmails = Array.from(new Set([...validEmails, ...unitEmails]));
+
+    const cleanEmail = (email || allAuthEmails[0] || `client-${Date.now()}@cliente.radioindoor.com`).trim().toLowerCase();
     const cleanMasterEmail = (masterEmail || cleanEmail).trim().toLowerCase();
 
     const existingClients = await getAll<DBClient>("clients");
@@ -1284,7 +1402,7 @@ export async function handleStandaloneRequest(
       name: (name || "Novo Cliente").trim(),
       email: cleanEmail,
       masterEmail: cleanMasterEmail,
-      authorizedEmails: validEmails,
+      authorizedEmails: allAuthEmails,
       passwordHash: password || "123456",
       playbackMode: playbackMode || "sequential",
       jingleMode: jingleMode || "interval",
@@ -1292,6 +1410,9 @@ export async function handleStandaloneRequest(
       jingleCount: typeof jingleCount === "number" ? jingleCount : 1,
       voiceoverCount: typeof voiceoverCount === "number" ? voiceoverCount : 1,
       jingleIntervalSeconds: typeof jingleIntervalSeconds === "number" ? jingleIntervalSeconds : 900,
+      plan: plan || "standard",
+      units: clientUnits,
+      allowedGlobalPlaylistIds: Array.isArray(allowedGlobalPlaylistIds) ? allowedGlobalPlaylistIds : [],
       active: true,
       createdAt: new Date().toISOString(),
     };
@@ -1305,6 +1426,8 @@ export async function handleStandaloneRequest(
       playbackMode: "sequential",
       active: true,
       createdAt: new Date().toISOString(),
+      isGlobal: false,
+      unitEmails: [],
     });
 
     return { status: 201, data: { id, ...newClient } };
@@ -1316,17 +1439,42 @@ export async function handleStandaloneRequest(
     if (method === "GET") {
       const client = await getById<DBClient>("clients", clientId);
       if (!client) return { status: 404, data: { error: "Not Found", message: "Cliente não encontrado" } };
-      return { status: 200, data: client };
+      return {
+        status: 200,
+        data: {
+          ...client,
+          plan: client.plan || "standard",
+          units: Array.isArray(client.units) ? client.units : [],
+          allowedGlobalPlaylistIds: Array.isArray(client.allowedGlobalPlaylistIds) ? client.allowedGlobalPlaylistIds : [],
+        },
+      };
     }
 
     if (method === "PUT") {
       const client = await getById<DBClient>("clients", clientId);
       if (!client) return { status: 404, data: { error: "Not Found", message: "Cliente não encontrado" } };
-      const updated = {
+
+      const updatedUnits: { name: string; email: string }[] = Array.isArray(body.units)
+        ? body.units.filter((u: any) => u && typeof u.email === "string" && u.email.trim())
+        : (client.units || []);
+
+      const unitEmails = updatedUnits.map((u) => u.email.trim().toLowerCase());
+      const rawAuthEmails = Array.isArray(body.authorizedEmails) ? body.authorizedEmails : client.authorizedEmails || [];
+      const updatedAuthEmails = Array.from(new Set([
+        ...rawAuthEmails.map((e: any) => String(e).trim().toLowerCase()).filter(Boolean),
+        ...unitEmails,
+      ]));
+
+      const updated: DBClient = {
         ...client,
         ...body,
         id: clientId,
-        authorizedEmails: Array.isArray(body.authorizedEmails) ? body.authorizedEmails : client.authorizedEmails || [],
+        plan: body.plan || client.plan || "standard",
+        units: updatedUnits,
+        allowedGlobalPlaylistIds: Array.isArray(body.allowedGlobalPlaylistIds)
+          ? body.allowedGlobalPlaylistIds
+          : client.allowedGlobalPlaylistIds || [],
+        authorizedEmails: updatedAuthEmails,
       };
       await update("clients", updated);
       return { status: 200, data: updated };
@@ -1343,28 +1491,37 @@ export async function handleStandaloneRequest(
     const playlists = await getAll<DBPlaylist>("playlists");
     const allItems = await getAll<DBPlaylistItem>("playlistItems");
     const clientIdParam = query.get("clientId");
+    const isGlobalParam = query.get("isGlobal");
 
     let result = playlists;
-    if (clientIdParam) {
-      result = playlists.filter((p) => p.clientId === parseInt(clientIdParam));
+    if (clientIdParam === "global" || isGlobalParam === "true") {
+      result = playlists.filter((p) => p.isGlobal === true);
+    } else if (clientIdParam) {
+      result = playlists.filter((p) => p.clientId === parseInt(clientIdParam) && !p.isGlobal);
     }
 
     const enriched = result.map((p) => ({
       ...p,
-      itemCount: allItems.filter((i) => i.playlistId === p.id).length,
+      isGlobal: !!p.isGlobal,
+      allowedPlans: Array.isArray(p.allowedPlans) ? p.allowedPlans : ["all"],
+      unitEmails: Array.isArray(p.unitEmails) ? p.unitEmails : [],
+      itemCount: allItems.filter((i) => i.playlistId === p.id && i.active !== false).length,
     }));
 
     return { status: 200, data: enriched };
   }
 
   if (path === "/api/playlists" && method === "POST") {
-    const { name, clientId, playbackMode } = body || {};
+    const { name, clientId, playbackMode, isGlobal, allowedPlans, unitEmails } = body || {};
     const newPl: Omit<DBPlaylist, "id"> = {
       name: name || "Nova Playlist",
       clientId: typeof clientId === "number" ? clientId : 1,
       playbackMode: playbackMode || "sequential",
       active: true,
       createdAt: new Date().toISOString(),
+      isGlobal: !!isGlobal,
+      allowedPlans: Array.isArray(allowedPlans) ? allowedPlans : ["all"],
+      unitEmails: Array.isArray(unitEmails) ? unitEmails : [],
     };
     const id = await insert("playlists", newPl);
     return { status: 201, data: { id, ...newPl, itemCount: 0 } };
@@ -1397,13 +1554,29 @@ export async function handleStandaloneRequest(
         }
       }
 
-      return { status: 200, data: { ...playlist, items: validItems } };
+      return {
+        status: 200,
+        data: {
+          ...playlist,
+          isGlobal: !!playlist.isGlobal,
+          allowedPlans: Array.isArray(playlist.allowedPlans) ? playlist.allowedPlans : ["all"],
+          unitEmails: Array.isArray(playlist.unitEmails) ? playlist.unitEmails : [],
+          items: validItems,
+        },
+      };
     }
 
     if (method === "PUT") {
       const playlist = await getById<DBPlaylist>("playlists", plId);
       if (!playlist) return { status: 404, data: { error: "Not Found", message: "Playlist não encontrada" } };
-      const updated = { ...playlist, ...body, id: plId };
+      const updated: DBPlaylist = {
+        ...playlist,
+        ...body,
+        id: plId,
+        isGlobal: body.isGlobal !== undefined ? !!body.isGlobal : !!playlist.isGlobal,
+        allowedPlans: Array.isArray(body.allowedPlans) ? body.allowedPlans : playlist.allowedPlans || ["all"],
+        unitEmails: Array.isArray(body.unitEmails) ? body.unitEmails : playlist.unitEmails || [],
+      };
       await update("playlists", updated);
       return { status: 200, data: updated };
     }
@@ -1523,6 +1696,7 @@ export async function handleStandaloneRequest(
 
     const enriched = result.map((m) => ({
       ...m,
+      unitEmails: Array.isArray(m.unitEmails) ? m.unitEmails : [],
       url: getMediaBlobUrl(m.id, inMemoryMediaBlobs.get(m.id) || m.blob, m.url),
     }));
 
@@ -1554,6 +1728,7 @@ export async function handleStandaloneRequest(
     let blob: Blob | undefined;
     let cloudUrl = "";
     let chunkCount = 0;
+    let unitEmails: string[] = [];
 
     if (body instanceof FormData) {
       const file = body.get("file") as File;
@@ -1563,6 +1738,15 @@ export async function handleStandaloneRequest(
         clientId = parseInt(body.get("clientId") as string) || 1;
         size = file.size;
         blob = file;
+
+        const rawUnits = body.get("unitEmails");
+        if (rawUnits && typeof rawUnits === "string") {
+          try {
+            unitEmails = JSON.parse(rawUnits);
+          } catch {
+            unitEmails = rawUnits.split(/[\r\n,;\s]+/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+          }
+        }
 
         if (onProgress) onProgress(20);
 
@@ -1589,6 +1773,7 @@ export async function handleStandaloneRequest(
           url: cloudUrl,
           blob,
           chunkCount: 0,
+          unitEmails: Array.isArray(unitEmails) ? unitEmails : [],
         };
 
         // Upload directly to Google Cloud Storage for global streaming
@@ -1647,6 +1832,9 @@ export async function handleStandaloneRequest(
       type = body.type || type;
       clientId = parseInt(body.clientId) || clientId;
       duration = body.duration || duration;
+      if (Array.isArray(body.unitEmails)) {
+        unitEmails = body.unitEmails.map((e: any) => String(e).trim().toLowerCase()).filter(Boolean);
+      }
     }
 
     const objectKey = `media_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
@@ -1661,6 +1849,7 @@ export async function handleStandaloneRequest(
       createdAt: new Date().toISOString(),
       url: cloudUrl,
       blob,
+      unitEmails: Array.isArray(unitEmails) ? unitEmails : [],
     };
 
     const id = await insert("media", newMedia);
@@ -1691,6 +1880,9 @@ export async function handleStandaloneRequest(
       ...(body.type !== undefined ? { type: body.type } : {}),
       ...(body.clientId !== undefined ? { clientId: parseInt(body.clientId) } : {}),
       ...(body.duration !== undefined ? { duration: body.duration } : {}),
+      ...(body.unitEmails !== undefined
+        ? { unitEmails: Array.isArray(body.unitEmails) ? body.unitEmails.map((e: any) => String(e).trim().toLowerCase()).filter(Boolean) : [] }
+        : {}),
     };
     await update("media", updated);
     return { status: 200, data: updated };

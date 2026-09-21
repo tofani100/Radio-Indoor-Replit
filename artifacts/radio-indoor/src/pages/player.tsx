@@ -3,6 +3,7 @@ import {
   Radio, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, AlertCircle,
   Clock, Music, Activity, Headphones, Hash, Mic2, SlidersHorizontal,
   Download, Share, CheckCircle2, X, ListMusic, ChevronDown, ArrowLeftRight, Shuffle,
+  Building2, Globe,
 } from "lucide-react";
 import {
   useRegisterDevice, useGetPlaybackQueue, getGetPlaybackQueueQueryKey,
@@ -230,10 +231,13 @@ export default function PlayerPage() {
   }, [queue?.playlistId]);
 
   // MUST be before any early return (Rules of Hooks)
-  const currentPlaylistName = useMemo(() => {
+  const currentPlaylist = useMemo(() => {
     if (!availablePlaylists || !selectedPlaylistId) return null;
-    return availablePlaylists.find((p) => p.id === selectedPlaylistId)?.name ?? null;
+    return (availablePlaylists as any[]).find((p) => p.id === selectedPlaylistId) ?? null;
   }, [availablePlaylists, selectedPlaylistId]);
+
+  const currentPlaylistName = currentPlaylist?.name ?? null;
+  const isCurrentPlaylistGlobal = !!currentPlaylist?.isGlobal;
 
   const multiplePlaylistsAvailable = (availablePlaylists?.length ?? 0) > 1;
 
@@ -984,54 +988,111 @@ export default function PlayerPage() {
           </button>
 
           {/* Playlist switcher — exibido para permitir a troca entre todas as playlists do cliente */}
-          {(availablePlaylists?.length ?? 0) > 0 && (
-            <div className="relative">
-              <button
-                data-testid="button-playlist-switcher"
-                type="button"
-                onClick={() => setPlaylistDropdownOpen((o) => !o)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded border border-[var(--dj-cyan)] bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] text-[10px] uppercase font-bold tracking-widest hover:bg-[var(--dj-cyan)] hover:text-[#060a14] transition-colors cursor-pointer"
-                title="Trocar de playlist"
-              >
-                <ListMusic className="w-3.5 h-3.5 flex-none" />
-                <span className="hidden sm:inline truncate max-w-[140px]">
-                  {currentPlaylistName ?? "Playlist"}
-                </span>
-                <ChevronDown className={`w-3.5 h-3.5 flex-none transition-transform ${playlistDropdownOpen ? "rotate-180" : ""}`} />
-              </button>
+          {(availablePlaylists?.length ?? 0) > 0 && (() => {
+            const all = (availablePlaylists as any[]) || [];
+            const exclusivePlaylists = all.filter((p) => !p.isGlobal);
+            const globalPlaylists = all.filter((p) => !!p.isGlobal);
 
-              {playlistDropdownOpen && (
-                <>
-                  {/* Backdrop to close dropdown */}
-                  <div
-                    className="fixed inset-0 z-40"
-                    onClick={() => setPlaylistDropdownOpen(false)}
-                  />
-                  <div className="absolute right-0 top-full mt-2 z-50 min-w-[200px] bg-[var(--dj-panel)] border border-[var(--dj-cyan)] rounded-lg shadow-2xl overflow-hidden">
-                    <div className="px-3 py-2 border-b border-[var(--dj-border)]">
-                      <p className="text-[9px] uppercase tracking-widest text-[var(--dj-muted)]">Selecionar Playlist</p>
+            return (
+              <div className="relative">
+                <button
+                  data-testid="button-playlist-switcher"
+                  type="button"
+                  onClick={() => setPlaylistDropdownOpen((o) => !o)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded border text-[10px] uppercase font-bold tracking-widest transition-colors cursor-pointer ${
+                    isCurrentPlaylistGlobal
+                      ? "border-emerald-500 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-[#060a14]"
+                      : "border-[var(--dj-cyan)] bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] hover:bg-[var(--dj-cyan)] hover:text-[#060a14]"
+                  }`}
+                  title="Trocar de playlist"
+                >
+                  {isCurrentPlaylistGlobal ? (
+                    <Globe className="w-3.5 h-3.5 flex-none text-emerald-400" />
+                  ) : (
+                    <ListMusic className="w-3.5 h-3.5 flex-none" />
+                  )}
+                  <span className="hidden sm:inline truncate max-w-[140px]">
+                    {currentPlaylistName ?? "Playlist"}
+                  </span>
+                  <ChevronDown className={`w-3.5 h-3.5 flex-none transition-transform ${playlistDropdownOpen ? "rotate-180" : ""}`} />
+                </button>
+
+                {playlistDropdownOpen && (
+                  <>
+                    {/* Backdrop to close dropdown */}
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setPlaylistDropdownOpen(false)}
+                    />
+                    <div className="absolute right-0 top-full mt-2 z-50 min-w-[260px] max-w-[340px] max-h-[420px] overflow-y-auto bg-[var(--dj-panel)] border border-[var(--dj-border)] rounded-lg shadow-2xl">
+                      <div className="px-3 py-2 border-b border-[var(--dj-border)] bg-black/20 flex items-center justify-between">
+                        <p className="text-[9px] uppercase tracking-widest text-[var(--dj-muted)] font-bold">Selecionar Playlist</p>
+                        <span className="text-[9px] text-[var(--dj-muted)] font-mono">{all.length} disponíveis</span>
+                      </div>
+
+                      {exclusivePlaylists.length > 0 && (
+                        <div>
+                          <div className="px-3 py-1.5 bg-[var(--dj-cyan)]/10 border-b border-[var(--dj-border)] flex items-center justify-between">
+                            <span className="text-[9px] uppercase font-bold tracking-wider text-[var(--dj-cyan)] flex items-center gap-1.5">
+                              <Building2 className="w-3 h-3" /> Playlists da Loja
+                            </span>
+                            <span className="text-[8px] text-[var(--dj-cyan)]/70 font-mono">{exclusivePlaylists.length}</span>
+                          </div>
+                          {exclusivePlaylists.map((pl) => (
+                            <button
+                              key={pl.id}
+                              type="button"
+                              data-testid={`playlist-option-${pl.id}`}
+                              onClick={() => handlePlaylistSwitch(pl.id)}
+                              className={`w-full text-left px-4 py-2.5 text-xs flex items-center justify-between gap-3 transition-colors border-b border-[var(--dj-border)]/30 ${
+                                pl.id === selectedPlaylistId
+                                  ? "bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] font-semibold"
+                                  : "text-[var(--dj-text)] hover:bg-[var(--dj-accent)]"
+                              }`}
+                            >
+                              <div className="truncate flex-1">
+                                <p className="truncate">{pl.name}</p>
+                              </div>
+                              <span className="text-[10px] text-[var(--dj-muted)] font-mono flex-none">{pl.itemCount} faixas</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {globalPlaylists.length > 0 && (
+                        <div>
+                          <div className="px-3 py-1.5 bg-emerald-500/10 border-b border-emerald-500/20 flex items-center justify-between">
+                            <span className="text-[9px] uppercase font-bold tracking-wider text-emerald-400 flex items-center gap-1.5">
+                              <Globe className="w-3 h-3" /> Acervo Geral (Seu Plano)
+                            </span>
+                            <span className="text-[8px] text-emerald-400/70 font-mono">{globalPlaylists.length}</span>
+                          </div>
+                          {globalPlaylists.map((pl) => (
+                            <button
+                              key={pl.id}
+                              type="button"
+                              data-testid={`playlist-option-${pl.id}`}
+                              onClick={() => handlePlaylistSwitch(pl.id)}
+                              className={`w-full text-left px-4 py-2.5 text-xs flex items-center justify-between gap-3 transition-colors border-b border-[var(--dj-border)]/30 ${
+                                pl.id === selectedPlaylistId
+                                  ? "bg-emerald-500/15 text-emerald-300 font-semibold"
+                                  : "text-[var(--dj-text)] hover:bg-[var(--dj-accent)]"
+                              }`}
+                            >
+                              <div className="truncate flex-1">
+                                <p className="truncate">{pl.name}</p>
+                              </div>
+                              <span className="text-[10px] text-[var(--dj-muted)] font-mono flex-none">{pl.itemCount} faixas</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                    {availablePlaylists!.map((pl) => (
-                      <button
-                        key={pl.id}
-                        type="button"
-                        data-testid={`playlist-option-${pl.id}`}
-                        onClick={() => handlePlaylistSwitch(pl.id)}
-                        className={`w-full text-left px-4 py-2.5 text-xs flex items-center justify-between gap-3 transition-colors ${
-                          pl.id === selectedPlaylistId
-                            ? "bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)]"
-                            : "text-[var(--dj-text)] hover:bg-[var(--dj-accent)]"
-                        }`}
-                      >
-                        <span className="font-semibold truncate">{pl.name}</span>
-                        <span className="text-[var(--dj-muted)] flex-none">{pl.itemCount} faixas</span>
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
+                  </>
+                )}
+              </div>
+            );
+          })()}
 
           <div className="hidden md:flex items-center gap-2 text-xs font-semibold">
             <Radio className="w-4 h-4 text-[var(--dj-cyan)]" />

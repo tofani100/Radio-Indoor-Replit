@@ -1,5 +1,5 @@
 import { useState, useRef, useMemo, useEffect } from "react";
-import { Upload, Trash2, Music, Mic, Filter, CheckSquare, Square, Clock, Loader2, CheckCircle2, XCircle, RotateCw, X } from "lucide-react";
+import { Upload, Trash2, Music, Mic, Filter, CheckSquare, Square, Clock, Loader2, CheckCircle2, XCircle, RotateCw, X, Building2, MapPin } from "lucide-react";
 import {
   useListMedia, getListMediaQueryKey,
   useDeleteMedia, useDeleteMediaBatch,
@@ -37,6 +37,11 @@ export default function MediaPage() {
   const [isUploading, setIsUploading] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [targetAllUnits, setTargetAllUnits] = useState(true);
+  const [selectedUnitEmails, setSelectedUnitEmails] = useState<string[]>([]);
+  const [editingTargetMedia, setEditingTargetMedia] = useState<any | null>(null);
+  const [editingUnitEmails, setEditingUnitEmails] = useState<string[]>([]);
+  const [isSavingTargeting, setIsSavingTargeting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: clients } = useListClients({ query: { queryKey: getListClientsQueryKey() } });
@@ -119,6 +124,9 @@ export default function MediaPage() {
     formData.append("title", item.title);
     formData.append("type", item.type);
     formData.append("clientId", clientId);
+    if (item.type !== "music") {
+      formData.append("unitEmails", JSON.stringify(targetAllUnits ? [] : selectedUnitEmails));
+    }
 
     setUploadItems((prev) => prev.map((u, i) => (i === idx ? { ...u, status: "uploading", progress: 10 } : u)));
 
@@ -323,6 +331,7 @@ export default function MediaPage() {
               </th>
               <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Tipo</th>
               <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Título</th>
+              <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Destino / Filiais</th>
               <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Artista</th>
               <th className="text-center px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Duração</th>
               <th className="text-center px-5 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">Ganho</th>
@@ -330,7 +339,7 @@ export default function MediaPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-card-border">
-            {isLoading && [...Array(5)].map((_, i) => <tr key={i}><td colSpan={7} className="px-5 py-4"><div className="h-4 bg-muted animate-pulse rounded" /></td></tr>)}
+            {isLoading && [...Array(5)].map((_, i) => <tr key={i}><td colSpan={8} className="px-5 py-4"><div className="h-4 bg-muted animate-pulse rounded" /></td></tr>)}
             {Array.isArray(media) && media.map((m) => {
               const isChecked = selected.has(m.id);
               const badgeConfig =
@@ -381,6 +390,31 @@ export default function MediaPage() {
                     </Select>
                   </td>
                   <td className="px-5 py-4 font-medium text-foreground">{m.title}</td>
+                  <td className="px-5 py-4">
+                    {m.type === "music" ? (
+                      <span className="text-xs text-muted-foreground/50">–</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingTargetMedia(m);
+                          setEditingUnitEmails(Array.isArray((m as any).unitEmails) ? (m as any).unitEmails : []);
+                        }}
+                        className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded font-medium transition-colors hover:opacity-80 cursor-pointer"
+                        title="Configurar filiais para este comercial"
+                      >
+                        {!(m as any).unitEmails || (m as any).unitEmails.length === 0 ? (
+                          <span className="inline-flex items-center gap-1 text-blue-600 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
+                            <Building2 className="w-3 h-3" /> Todas as filiais
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-purple-600 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/20">
+                            <MapPin className="w-3 h-3" /> {(m as any).unitEmails.length} filial(is)
+                          </span>
+                        )}
+                      </button>
+                    )}
+                  </td>
                   <td className="px-5 py-4 text-muted-foreground">{m.artist ?? "–"}</td>
                   <td className="px-5 py-4 text-center font-mono text-xs text-muted-foreground">{formatDuration(m.duration)}</td>
                   <td className="px-5 py-4 text-center text-xs text-muted-foreground">{m.gain?.toFixed(1) ?? "1.0"}</td>
@@ -399,7 +433,7 @@ export default function MediaPage() {
                 </tr>
               );
             })}
-            {!isLoading && !media?.length && <tr><td colSpan={7} className="px-5 py-12 text-center text-muted-foreground">Nenhuma mídia encontrada</td></tr>}
+            {!isLoading && !media?.length && <tr><td colSpan={8} className="px-5 py-12 text-center text-muted-foreground">Nenhuma mídia encontrada</td></tr>}
           </tbody>
         </table>
         </div>
@@ -447,7 +481,14 @@ export default function MediaPage() {
               <Label>
                 Cliente <span className="text-destructive">*</span>
               </Label>
-              <Select value={uploadClientId} onValueChange={setUploadClientId}>
+              <Select
+                value={uploadClientId}
+                onValueChange={(val) => {
+                  setUploadClientId(val);
+                  setTargetAllUnits(true);
+                  setSelectedUnitEmails([]);
+                }}
+              >
                 <SelectTrigger data-testid="select-upload-client"><SelectValue placeholder="Selecione um cliente" /></SelectTrigger>
                 <SelectContent>{Array.isArray(clients) && clients.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent>
               </Select>
@@ -476,6 +517,102 @@ export default function MediaPage() {
                 </SelectContent>
               </Select>
             </div>
+
+            {uploadClientId && (uploadType !== "music" || uploadItems.some((u) => u.type !== "music")) && (() => {
+              const selectedClient = clients?.find((c) => String(c.id) === uploadClientId);
+              const units = selectedClient?.units || [];
+              if (!units.length) return null;
+
+              return (
+                <div className="p-3.5 bg-muted/40 rounded-xl border border-border space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-semibold flex items-center gap-1.5 text-foreground">
+                      <Building2 className="w-3.5 h-3.5 text-primary" />
+                      Destino dos Jingles / Locuções nas Filiais
+                    </Label>
+                    <span className="text-[10px] text-muted-foreground">{units.length} filiais cadastradas</span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Defina se estes comerciais tocarão em toda a rede deste cliente ou somente em filiais específicas (ex: horários ou promoções locais).
+                  </p>
+                  <div className="flex gap-4 text-xs pt-1">
+                    <label className="flex items-center gap-2 cursor-pointer font-medium text-foreground">
+                      <input
+                        type="radio"
+                        name="targetUnitsUpload"
+                        checked={targetAllUnits}
+                        onChange={() => setTargetAllUnits(true)}
+                        className="accent-primary"
+                      />
+                      <span>🏢 Todas as filiais (Rede Inteira)</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer font-medium text-foreground">
+                      <input
+                        type="radio"
+                        name="targetUnitsUpload"
+                        checked={!targetAllUnits}
+                        onChange={() => {
+                          setTargetAllUnits(false);
+                          if (selectedUnitEmails.length === 0) {
+                            setSelectedUnitEmails(units.map((u: any) => u.email.toLowerCase()));
+                          }
+                        }}
+                        className="accent-primary"
+                      />
+                      <span>📍 Filiais selecionadas</span>
+                    </label>
+                  </div>
+                  {!targetAllUnits && (
+                    <div className="mt-2 pt-2 border-t border-border/50 space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px] text-muted-foreground pb-1">
+                        <span>Selecione as filiais:</span>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            className="text-primary hover:underline"
+                            onClick={() => setSelectedUnitEmails(units.map((u: any) => u.email.toLowerCase()))}
+                          >
+                            Marcar todas
+                          </button>
+                          <span>•</span>
+                          <button
+                            type="button"
+                            className="text-primary hover:underline"
+                            onClick={() => setSelectedUnitEmails([])}
+                          >
+                            Limpar
+                          </button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-36 overflow-y-auto pr-1">
+                        {units.map((u: any) => {
+                          const email = u.email.toLowerCase();
+                          const isChecked = selectedUnitEmails.includes(email);
+                          return (
+                            <label key={email} className="flex items-center gap-2 text-xs p-1.5 rounded hover:bg-muted border border-border/50 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => {
+                                  setSelectedUnitEmails((prev) =>
+                                    isChecked ? prev.filter((e) => e !== email) : [...prev, email]
+                                  );
+                                }}
+                                className="rounded accent-primary"
+                              />
+                              <div className="truncate">
+                                <span className="font-medium text-foreground">{u.name}</span>
+                                <span className="text-[10px] text-muted-foreground block truncate">{u.email}</span>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             <div
               className={cn(
                 "border-2 border-dashed rounded-lg p-8 text-center transition-colors",
@@ -650,6 +787,143 @@ export default function MediaPage() {
               </Button>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog de Edição de Segmentação de Filiais para Jingle / Locução */}
+      <Dialog open={!!editingTargetMedia} onOpenChange={(o) => { if (!o) setEditingTargetMedia(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Building2 className="w-5 h-5 text-primary" />
+              <span>Destino da Mídia nas Filiais</span>
+            </DialogTitle>
+          </DialogHeader>
+          {editingTargetMedia && (() => {
+            const client = clients?.find((c) => c.id === editingTargetMedia.clientId);
+            const units = client?.units || [];
+            const isAll = editingUnitEmails.length === 0;
+
+            return (
+              <div className="space-y-4">
+                <div className="p-3 bg-muted/40 rounded-lg text-xs space-y-1 border border-border">
+                  <p className="font-semibold text-foreground truncate">{editingTargetMedia.title}</p>
+                  <p className="text-muted-foreground">Cliente: <strong>{client?.name || "–"}</strong></p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-xs font-medium">Onde tocar este {editingTargetMedia.type === "jingle" ? "jingle" : "locução"}?</Label>
+                  <div className="flex gap-4 text-xs">
+                    <label className="flex items-center gap-2 cursor-pointer font-medium text-foreground">
+                      <input
+                        type="radio"
+                        name="editTargetUnitsRadio"
+                        checked={isAll}
+                        onChange={() => setEditingUnitEmails([])}
+                        className="accent-primary"
+                      />
+                      <span>🏢 Todas as filiais (Rede)</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer font-medium text-foreground">
+                      <input
+                        type="radio"
+                        name="editTargetUnitsRadio"
+                        checked={!isAll}
+                        onChange={() => {
+                          if (units.length > 0 && editingUnitEmails.length === 0) {
+                            setEditingUnitEmails(units.map((u: any) => u.email.toLowerCase()));
+                          }
+                        }}
+                        className="accent-primary"
+                      />
+                      <span>📍 Filiais específicas</span>
+                    </label>
+                  </div>
+                </div>
+
+                {!isAll && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>Selecione as filiais autorizadas:</span>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          className="text-primary hover:underline text-xs"
+                          onClick={() => setEditingUnitEmails(units.map((u: any) => u.email.toLowerCase()))}
+                        >
+                          Marcar todas
+                        </button>
+                        <span>•</span>
+                        <button
+                          type="button"
+                          className="text-primary hover:underline text-xs"
+                          onClick={() => setEditingUnitEmails([])}
+                        >
+                          Limpar
+                        </button>
+                      </div>
+                    </div>
+                    {units.length === 0 ? (
+                      <p className="text-xs text-amber-600 bg-amber-500/10 p-2.5 rounded border border-amber-500/20">
+                        Este cliente ainda não possui filiais cadastradas na aba "Clientes". O áudio tocará em todos os dispositivos da conta.
+                      </p>
+                    ) : (
+                      <div className="max-h-48 overflow-y-auto space-y-1.5 border border-border rounded-lg p-2">
+                        {units.map((u: any) => {
+                          const email = u.email.toLowerCase();
+                          const isChecked = editingUnitEmails.includes(email);
+                          return (
+                            <label key={email} className="flex items-center gap-2 text-xs p-2 rounded hover:bg-muted cursor-pointer border border-border/40">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => {
+                                  setEditingUnitEmails((prev) =>
+                                    isChecked ? prev.filter((e) => e !== email) : [...prev, email]
+                                  );
+                                }}
+                                className="rounded accent-primary"
+                              />
+                              <div className="truncate">
+                                <span className="font-medium text-foreground">{u.name}</span>
+                                <span className="text-[10px] text-muted-foreground block truncate">{u.email}</span>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <DialogFooter className="gap-2 sm:gap-0">
+                  <Button variant="outline" onClick={() => setEditingTargetMedia(null)} disabled={isSavingTargeting}>
+                    Cancelar
+                  </Button>
+                  <Button
+                    disabled={isSavingTargeting}
+                    onClick={async () => {
+                      setIsSavingTargeting(true);
+                      try {
+                        await handleStandaloneRequest(`/api/media/${editingTargetMedia.id}`, "PATCH", {
+                          unitEmails: editingUnitEmails,
+                        });
+                        toast({ title: "Filiais da mídia atualizadas com sucesso!" });
+                        invalidateMedia();
+                        setEditingTargetMedia(null);
+                      } catch (err) {
+                        toast({ title: "Erro ao salvar filiais da mídia", variant: "destructive" });
+                      } finally {
+                        setIsSavingTargeting(false);
+                      }
+                    }}
+                  >
+                    {isSavingTargeting ? "Salvando..." : "Salvar Destino"}
+                  </Button>
+                </DialogFooter>
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
     </div>

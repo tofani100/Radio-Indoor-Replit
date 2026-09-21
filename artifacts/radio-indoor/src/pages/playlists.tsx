@@ -21,69 +21,201 @@ export default function PlaylistsPage() {
   const { toast } = useToast();
   const [clientFilter, setClientFilter] = useState<string>(() => {
     const params = new URLSearchParams(window.location.search);
-    return params.get("clientId") || "";
+    return params.get("clientId") || "global";
   });
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null);
   const [editTarget, setEditTarget] = useState<{ id: number; name: string } | null>(null);
   const [editName, setEditName] = useState("");
-  const [form, setForm] = useState({ name: "", clientId: "", playbackMode: "sequential" });
+
+  const [form, setForm] = useState({
+    name: "",
+    isGlobal: true,
+    clientId: "",
+    playbackMode: "sequential",
+    allowedPlan: "all",
+    targetAllUnits: true,
+    selectedUnitEmails: [] as string[],
+  });
 
   const { data: clients } = useListClients({ query: { queryKey: getListClientsQueryKey() } });
 
-  // If no client is filtered but clients list has items, default to the first client or keep selected
+  // If no client is filtered, default to "global"
   useEffect(() => {
-    if (!clientFilter && Array.isArray(clients) && clients.length > 0) {
-      setClientFilter(String(clients[0]!.id));
+    if (!clientFilter) {
+      setClientFilter("global");
     }
-  }, [clients, clientFilter]);
+  }, [clientFilter]);
 
-  const params = clientFilter ? { clientId: parseInt(clientFilter) } : {};
-  const { data: playlists, isLoading } = useListPlaylists(params, { query: { queryKey: getListPlaylistsQueryKey(params), enabled: !!clientFilter } });
+  const params = clientFilter === "global"
+    ? ({ isGlobal: true } as any)
+    : clientFilter
+    ? { clientId: parseInt(clientFilter) }
+    : {};
+
+  const { data: playlists, isLoading } = useListPlaylists(params, {
+    query: { queryKey: getListPlaylistsQueryKey(params), enabled: !!clientFilter },
+  });
 
   const inv = () => qc.invalidateQueries({ queryKey: getListPlaylistsQueryKey() });
 
-  const create = useCreatePlaylist({ mutation: { onSuccess: () => { toast({ title: "Playlist criada" }); inv(); setCreateOpen(false); setForm({ name: "", clientId: "", playbackMode: "sequential" }); }, onError: () => toast({ title: "Erro ao criar", variant: "destructive" }) } });
-  const del = useDeletePlaylist({ mutation: { onSuccess: () => { toast({ title: "Playlist removida" }); inv(); setDeleteTarget(null); }, onError: () => toast({ title: "Erro", variant: "destructive" }) } });
-  const update = useUpdatePlaylist({ mutation: { onSuccess: () => { toast({ title: "Playlist renomeada" }); inv(); setEditTarget(null); }, onError: () => toast({ title: "Erro ao renomear", variant: "destructive" }) } });
+  const create = useCreatePlaylist({
+    mutation: {
+      onSuccess: () => {
+        toast({ title: "Playlist criada com sucesso" });
+        inv();
+        setCreateOpen(false);
+        setForm({
+          name: "",
+          isGlobal: clientFilter === "global",
+          clientId: clientFilter !== "global" ? clientFilter : "",
+          playbackMode: "sequential",
+          allowedPlan: "all",
+          targetAllUnits: true,
+          selectedUnitEmails: [],
+        });
+      },
+      onError: () => toast({ title: "Erro ao criar playlist", variant: "destructive" }),
+    },
+  });
+
+  const del = useDeletePlaylist({
+    mutation: {
+      onSuccess: () => { toast({ title: "Playlist removida" }); inv(); setDeleteTarget(null); },
+      onError: () => toast({ title: "Erro ao remover", variant: "destructive" }),
+    },
+  });
+
+  const update = useUpdatePlaylist({
+    mutation: {
+      onSuccess: () => { toast({ title: "Playlist renomeada" }); inv(); setEditTarget(null); },
+      onError: () => toast({ title: "Erro ao renomear", variant: "destructive" }),
+    },
+  });
+
+  const selectedClientObj = clients?.find((c) => String(c.id) === form.clientId);
+  const clientUnits = selectedClientObj && (selectedClientObj as any).units?.length > 0
+    ? (selectedClientObj as any).units as { name: string; email: string }[]
+    : (selectedClientObj?.authorizedEmails || []).map((em, idx) => ({ name: `Loja ${idx + 1}`, email: em }));
+
+  const handleCreateSubmit = () => {
+    if (!form.name.trim()) return;
+    const clientIdNum = form.isGlobal ? 1 : parseInt(form.clientId);
+    if (!form.isGlobal && isNaN(clientIdNum)) return;
+
+    create.mutate({
+      data: {
+        name: form.name.trim(),
+        clientId: clientIdNum,
+        playbackMode: form.playbackMode as "sequential" | "shuffle",
+        isGlobal: form.isGlobal,
+        allowedPlans: form.isGlobal ? (form.allowedPlan === "all" ? ["all"] : [form.allowedPlan]) : undefined,
+        unitEmails: form.isGlobal || form.targetAllUnits ? [] : form.selectedUnitEmails,
+      } as any,
+    });
+  };
 
   return (
     <div className="p-4 sm:p-8 max-w-5xl">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Playlists</h1>
-          <p className="text-sm text-muted-foreground mt-1">{playlists?.length ?? 0} playlists</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            {clientFilter === "global" ? "Acervo Geral de Playlists (Globais)" : "Playlists Exclusivas do Cliente"} · {playlists?.length ?? 0} playlists
+          </p>
         </div>
-        <Button data-testid="button-new-playlist" onClick={() => setCreateOpen(true)}>
+        <Button
+          data-testid="button-new-playlist"
+          onClick={() => {
+            setForm((prev) => ({
+              ...prev,
+              isGlobal: clientFilter === "global",
+              clientId: clientFilter !== "global" ? clientFilter : (clients?.[0] ? String(clients[0].id) : ""),
+            }));
+            setCreateOpen(true);
+          }}
+        >
           <Plus className="w-4 h-4 mr-2" /> Nova Playlist
         </Button>
       </div>
 
-      <div className="flex gap-3 mb-6">
-        <Select value={clientFilter} onValueChange={setClientFilter}>
-          <SelectTrigger className="w-48" data-testid="select-client-filter"><SelectValue placeholder="Selecione um cliente" /></SelectTrigger>
-          <SelectContent>
-            {Array.isArray(clients) && clients.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
-          </SelectContent>
-        </Select>
-      </div>
-
-      {!clientFilter && (
-        <div className="bg-card border border-card-border rounded-xl p-12 text-center text-muted-foreground mb-6">
-          Selecione um cliente acima para ver as playlists.
+      <div className="flex flex-wrap items-center gap-3 mb-6">
+        <div className="flex items-center gap-1.5 p-1 bg-muted/50 rounded-lg border border-border">
+          <button
+            type="button"
+            onClick={() => setClientFilter("global")}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+              clientFilter === "global"
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            🌐 Acervo Geral (Globais)
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (clientFilter === "global" && clients && clients.length > 0) {
+                setClientFilter(String(clients[0]!.id));
+              }
+            }}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+              clientFilter !== "global"
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            🏢 Por Cliente
+          </button>
         </div>
-      )}
+
+        {clientFilter !== "global" && (
+          <Select value={clientFilter} onValueChange={setClientFilter}>
+            <SelectTrigger className="w-56" data-testid="select-client-filter">
+              <SelectValue placeholder="Selecione um cliente" />
+            </SelectTrigger>
+            <SelectContent>
+              {Array.isArray(clients) && clients.map((c) => (
+                <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </div>
 
       <div className="grid gap-3">
         {isLoading && [...Array(3)].map((_, i) => <div key={i} className="bg-card border border-card-border rounded-xl h-20 animate-pulse" />)}
-        {Array.isArray(playlists) && playlists.map((p) => (
+        {Array.isArray(playlists) && playlists.map((p) => {
+          const isGlobal = (p as any).isGlobal === true;
+          const unitEmails: string[] = (p as any).unitEmails || [];
+
+          return (
           <div key={p.id} data-testid={`card-playlist-${p.id}`} className="bg-card border border-card-border rounded-xl px-4 py-3 sm:px-5 sm:py-4 flex items-center gap-3">
-            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg bg-primary/10 flex items-center justify-center flex-none">
-              <ListMusic className="w-4 h-4 sm:w-5 sm:h-5 text-primary" />
+            <div className={`w-9 h-9 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center flex-none ${
+              isGlobal ? "bg-purple-500/10 text-purple-600" : "bg-primary/10 text-primary"
+            }`}>
+              <ListMusic className="w-4 h-4 sm:w-5 sm:h-5" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="font-medium text-foreground truncate">{p.name}</p>
-              <p className="text-xs text-muted-foreground mt-0.5 truncate">{(p as any).clientName ?? "–"} · {p.itemCount ?? 0} faixas · {p.playbackMode}</p>
+              <div className="flex items-center gap-2">
+                <p className="font-medium text-foreground truncate">{p.name}</p>
+                {isGlobal ? (
+                  <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-600 border border-purple-500/30">
+                    Acervo Geral
+                  </span>
+                ) : unitEmails.length > 0 ? (
+                  <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-600 border border-blue-500/30">
+                    {unitEmails.length} {unitEmails.length === 1 ? "Filial" : "Filiais"}
+                  </span>
+                ) : (
+                  <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 border border-emerald-500/30">
+                    Todas as Filiais
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                {isGlobal ? "Disponível aos clientes por plano" : ((p as any).clientName ?? "–")} · {p.itemCount ?? 0} faixas · {p.playbackMode === "shuffle" ? "Aleatório" : "Sequencial"}
+              </p>
               <div className="flex items-center gap-2 mt-1 sm:hidden">
                 <span className={`text-xs px-2 py-0.5 rounded font-medium ${p.active ? "bg-emerald-500/10 text-emerald-600" : "bg-muted text-muted-foreground"}`}>{p.active ? "Ativa" : "Inativa"}</span>
                 <span className="text-xs text-muted-foreground">{formatDistanceToNow(new Date(p.createdAt), { addSuffix: true, locale: ptBR })}</span>
@@ -99,26 +231,137 @@ export default function PlaylistsPage() {
               <Button variant="ghost" size="sm" data-testid={`button-delete-playlist-${p.id}`} onClick={() => setDeleteTarget({ id: p.id, name: p.name })} className="text-muted-foreground hover:text-destructive"><Trash2 className="w-4 h-4" /></Button>
             </div>
           </div>
-        ))}
+        )})}
         {!isLoading && !playlists?.length && (
-          <div className="bg-card border border-card-border rounded-xl px-5 py-12 text-center text-muted-foreground">Nenhuma playlist encontrada</div>
+          <div className="bg-card border border-card-border rounded-xl px-5 py-12 text-center text-muted-foreground">
+            {clientFilter === "global"
+              ? "Nenhuma playlist no Acervo Geral. Crie uma para disponibilizar aos clientes!"
+              : "Nenhuma playlist encontrada para este cliente."}
+          </div>
         )}
       </div>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="sm:max-w-sm">
+        <DialogContent className="sm:max-w-md">
           <DialogHeader><DialogTitle>Nova Playlist</DialogTitle></DialogHeader>
           <div className="space-y-4">
-            <div><Label>Nome</Label><Input data-testid="input-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
             <div>
-              <Label>Cliente</Label>
-              <Select value={form.clientId} onValueChange={(v) => setForm({ ...form, clientId: v })}>
-                <SelectTrigger data-testid="select-client"><SelectValue placeholder="Selecione um cliente" /></SelectTrigger>
-                <SelectContent>{Array.isArray(clients) && clients.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent>
-              </Select>
+              <Label>Tipo da Playlist</Label>
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, isGlobal: true })}
+                  className={`p-2.5 rounded-lg border text-xs font-semibold text-left transition-colors ${
+                    form.isGlobal
+                      ? "border-purple-500 bg-purple-500/10 text-purple-700 dark:text-purple-300"
+                      : "border-border text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  <span className="block font-bold">🌐 Acervo Geral</span>
+                  <span className="text-[11px] font-normal text-muted-foreground">Compartilhada via plano</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, isGlobal: false })}
+                  className={`p-2.5 rounded-lg border text-xs font-semibold text-left transition-colors ${
+                    !form.isGlobal
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  <span className="block font-bold">🏢 Exclusiva do Cliente</span>
+                  <span className="text-[11px] font-normal text-muted-foreground">Personalizada da rede/filial</span>
+                </button>
+              </div>
             </div>
+
             <div>
-              <Label>Modo</Label>
+              <Label>Nome da Playlist</Label>
+              <Input
+                data-testid="input-name"
+                placeholder={form.isGlobal ? "Ex: Pop Hits 2026, Lounge & Café..." : "Ex: Especial Fim de Semana, Loja Matriz..."}
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+              />
+            </div>
+
+            {form.isGlobal ? (
+              <div>
+                <Label>Plano Mínimo para Acesso</Label>
+                <Select value={form.allowedPlan} onValueChange={(v) => setForm({ ...form, allowedPlan: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos os Planos (Standard & Master)</SelectItem>
+                    <SelectItem value="master">Exclusiva Plano Master</SelectItem>
+                    <SelectItem value="standard">Disponível Plano Standard</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <Label>Cliente / Empresa</Label>
+                  <Select value={form.clientId} onValueChange={(v) => setForm({ ...form, clientId: v, selectedUnitEmails: [] })}>
+                    <SelectTrigger data-testid="select-client"><SelectValue placeholder="Selecione um cliente" /></SelectTrigger>
+                    <SelectContent>
+                      {Array.isArray(clients) && clients.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {clientUnits.length > 1 && (
+                  <div className="p-3 bg-muted/30 border border-border rounded-lg space-y-2">
+                    <Label className="text-xs font-semibold">Disponibilidade nas Filiais</Label>
+                    <div className="space-y-1.5 text-xs">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="targetUnits"
+                          checked={form.targetAllUnits}
+                          onChange={() => setForm({ ...form, targetAllUnits: true, selectedUnitEmails: [] })}
+                        />
+                        <span>Todas as filiais deste cliente</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="targetUnits"
+                          checked={!form.targetAllUnits}
+                          onChange={() => setForm({ ...form, targetAllUnits: false })}
+                        />
+                        <span>Apenas filiais selecionadas</span>
+                      </label>
+                    </div>
+
+                    {!form.targetAllUnits && (
+                      <div className="pt-2 pl-4 space-y-1 max-h-32 overflow-y-auto">
+                        {clientUnits.map((u) => {
+                          const checked = form.selectedUnitEmails.includes(u.email);
+                          return (
+                            <label key={u.email} className="flex items-center gap-2 text-xs cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) => {
+                                  const next = e.target.checked
+                                    ? [...form.selectedUnitEmails, u.email]
+                                    : form.selectedUnitEmails.filter((em) => em !== u.email);
+                                  setForm({ ...form, selectedUnitEmails: next });
+                                }}
+                              />
+                              <span><strong>{u.name}</strong> <span className="text-[10px] text-muted-foreground">({u.email})</span></span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            <div>
+              <Label>Modo Padrão</Label>
               <Select value={form.playbackMode} onValueChange={(v) => setForm({ ...form, playbackMode: v })}>
                 <SelectTrigger data-testid="select-mode"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -130,8 +373,12 @@ export default function PlaylistsPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancelar</Button>
-            <Button data-testid="button-submit" onClick={() => create.mutate({ data: { name: form.name, clientId: parseInt(form.clientId), playbackMode: form.playbackMode as "sequential" | "shuffle" } })} disabled={!form.name || !form.clientId || create.isPending}>
-              {create.isPending ? "Criando..." : "Criar"}
+            <Button
+              data-testid="button-submit"
+              onClick={handleCreateSubmit}
+              disabled={!form.name || (!form.isGlobal && !form.clientId) || create.isPending}
+            >
+              {create.isPending ? "Criando..." : "Criar Playlist"}
             </Button>
           </DialogFooter>
         </DialogContent>
