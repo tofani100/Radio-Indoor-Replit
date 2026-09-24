@@ -3,7 +3,7 @@ import {
   Radio, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, AlertCircle,
   Clock, Music, Activity, Headphones, Hash, Mic2, SlidersHorizontal,
   Download, Share, CheckCircle2, X, ListMusic, ChevronDown, ArrowLeftRight, Shuffle,
-  Building2, Globe, Disc3, Megaphone, ListOrdered, Check,
+  Building2, Globe, Disc3, Megaphone, ListOrdered, Check, Loader2,
 } from "lucide-react";
 import {
   useRegisterDevice, useGetPlaybackQueue, getGetPlaybackQueueQueryKey,
@@ -196,6 +196,12 @@ export default function PlayerPage() {
   const [currentJingle, setCurrentJingle] = useState<{
     id: number; title: string; artist?: string | null; type: string; url: string; coverUrl?: string | null;
   } | null>(null);
+
+  // Estado de buffer/carregamento do áudio para feedback visual imediato
+  const [isBuffering, setIsBuffering] = useState(false);
+  const isBufferingRef = useRef(false);
+  const [jingleTimeRemaining, setJingleTimeRemaining] = useState<number | null>(null);
+  const jingleTargetTimeRef = useRef<number | null>(null);
 
   // Quanto tempo de fade-out antes da locução interromper.
   const FADE_OUT_MS = 2000;
@@ -507,14 +513,17 @@ export default function PlayerPage() {
     return (scheduledItems || []).filter((i) => i.type === "music").length;
   }, [scheduledItems]);
 
-  const commercialCount = useMemo(() => {
-    return (scheduledItems || []).filter((i) => i.type === "jingle" || i.type === "voiceover").length;
-  }, [scheduledItems]);
-
   // Pool of jingles/voiceovers available for time-mode interruption
   const jinglesPool = useMemo<QueueItem[]>(() => {
     return (queue?.items ?? []).filter((i) => i.type === "jingle" || i.type === "voiceover");
   }, [queue?.items]);
+
+  const commercialCount = useMemo(() => {
+    if (queue?.jingleMode === "time") {
+      return jinglesPool.length;
+    }
+    return (scheduledItems || []).filter((i) => i.type === "jingle" || i.type === "voiceover").length;
+  }, [scheduledItems, queue?.jingleMode, jinglesPool]);
 
   // Heartbeat every 30 seconds to maintain reliable presence and avoid duplicate session conflicts
   useEffect(() => {
@@ -596,6 +605,9 @@ export default function PlayerPage() {
       audioRef.current.onended = null;
       audioRef.current.onerror = null;
       audioRef.current.onplaying = null;
+      audioRef.current.oncanplay = null;
+      audioRef.current.onwaiting = null;
+      audioRef.current.onloadstart = null;
       try { audioRef.current.pause(); } catch { /* ignore */ }
       audioRef.current.src = "";
     }
@@ -611,38 +623,88 @@ export default function PlayerPage() {
     inJingleRef.current = false;
     resumeMusicIdxRef.current = null;
 
+    setIsBuffering(true);
+    isBufferingRef.current = true;
+
     const audio = new Audio(track.url);
+    audio.preload = "auto";
     const vol = effectiveVolume(track.type);
     audio.volume = vol;
     audio.muted = muted || vol <= 0.001;
     audioRef.current = audio;
     setCurrentTime(resumeAt);
-    setDuration(0);
+    // Exibe imediatamente a duração conhecida no modelo da faixa para evitar 00:00 / 00:00
+    setDuration(track.duration && Number.isFinite(track.duration) && track.duration > 0 ? track.duration : 0);
+
     if (resumeAt > 0) {
       const trySeek = () => {
         try { audio.currentTime = resumeAt; } catch { /* ignore */ }
       };
       audio.addEventListener("loadedmetadata", trySeek, { once: true });
     }
+
+    audio.onloadstart = () => {
+      setIsBuffering(true);
+      isBufferingRef.current = true;
+    };
+
+    audio.onwaiting = () => {
+      setIsBuffering(true);
+      isBufferingRef.current = true;
+    };
+
+    audio.oncanplay = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
+    };
+
     audio.play().catch((err) => {
       console.error("Falha ao tocar áudio:", track.url, err);
     });
+
     let hasLoggedTrack = false;
     audio.onplaying = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
       consecutiveErrorsRef.current = 0;
       setLoadError(null);
       if (!hasLoggedTrack) {
         hasLoggedTrack = true;
         logPlayback.mutate({ data: { mediaId: track.id, uuid, email } });
       }
+
+      // Preload do próximo áudio no cache do navegador para transição instantânea
+      try {
+        const currentList = scheduledItemsRef.current;
+        if (currentList.length > 1) {
+          const nextIdx = (idx + 1) % currentList.length;
+          const nextTrack = currentList[nextIdx];
+          if (nextTrack?.url) {
+            const preloader = new Audio();
+            preloader.preload = "auto";
+            preloader.src = nextTrack.url;
+          }
+        }
+      } catch {}
     };
+
     audio.onloadedmetadata = () => {
-      setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        setDuration(audio.duration);
+      }
     };
+
     audio.ontimeupdate = () => {
       setCurrentTime(audio.currentTime);
+      if (audio.currentTime > 0.1 && isBufferingRef.current) {
+        setIsBuffering(false);
+        isBufferingRef.current = false;
+      }
     };
+
     audio.onended = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
       const currentList = scheduledItemsRef.current;
       if (!currentList.length) return;
       const next = (idx + 1) % currentList.length;
@@ -651,7 +713,10 @@ export default function PlayerPage() {
       }
       playTrack(next);
     };
+
     audio.onerror = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
       console.error("Erro carregando áudio:", track.url);
       consecutiveErrorsRef.current += 1;
       // If we have looped through every item without a single successful
@@ -672,6 +737,7 @@ export default function PlayerPage() {
         playTrack(next);
       }, 1500);
     };
+
     setIsPlaying(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scheduledItems, uuid, email, effectivePlaybackMode]);
@@ -679,12 +745,15 @@ export default function PlayerPage() {
   // Modo "time": interrompe a música atual pra tocar 1 locução. Ao terminar
   // a locução, RETOMA a mesma música do ponto onde parou — só avança pra
   // próxima se a música já estava quase no fim.
-  const playJingleInterrupt = useCallback(() => {
+  // Permite passar um targetJingle opcional (ex: clique direto na fila de comerciais).
+  const playJingleInterrupt = useCallback((targetJingle?: QueueItem) => {
     if (inJingleRef.current) return;
     if (jinglesPool.length === 0) return;
     if (!scheduledItems.length) return;
-    const jingle = jinglesPool[jingleCycleRef.current % jinglesPool.length]!;
-    jingleCycleRef.current += 1;
+    const jingle = targetJingle ?? jinglesPool[jingleCycleRef.current % jinglesPool.length]!;
+    if (!targetJingle) {
+      jingleCycleRef.current += 1;
+    }
 
     // Captura posição atual da música pra retomar depois
     const prevAudio = audioRef.current;
@@ -698,6 +767,9 @@ export default function PlayerPage() {
       prevAudio.onended = null;
       prevAudio.onerror = null;
       prevAudio.onplaying = null;
+      prevAudio.oncanplay = null;
+      prevAudio.onwaiting = null;
+      prevAudio.onloadstart = null;
       try { prevAudio.pause(); } catch { /* ignore */ }
       prevAudio.src = "";
     }
@@ -717,23 +789,52 @@ export default function PlayerPage() {
       coverUrl: jingle.coverUrl ?? null,
     });
 
+    setIsBuffering(true);
+    isBufferingRef.current = true;
+
     const audio = new Audio(jingle.url);
+    audio.preload = "auto";
     const vol = effectiveVolume(jingle.type || "voiceover");
     audio.volume = vol;
     audio.muted = muted || vol <= 0.001;
     audioRef.current = audio;
     setCurrentTime(0);
-    setDuration(0);
+    setDuration(jingle.duration && Number.isFinite(jingle.duration) && jingle.duration > 0 ? jingle.duration : 0);
+
+    audio.onloadstart = () => {
+      setIsBuffering(true);
+      isBufferingRef.current = true;
+    };
+    audio.onwaiting = () => {
+      setIsBuffering(true);
+      isBufferingRef.current = true;
+    };
+    audio.oncanplay = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
+    };
+
     audio.play().catch((err) => {
       console.error("Falha ao tocar locução:", jingle.url, err);
     });
+
     audio.onloadedmetadata = () => {
-      setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        setDuration(audio.duration);
+      }
     };
+
     audio.ontimeupdate = () => {
       setCurrentTime(audio.currentTime);
+      if (audio.currentTime > 0.1 && isBufferingRef.current) {
+        setIsBuffering(false);
+        isBufferingRef.current = false;
+      }
     };
+
     const resumeOrAdvance = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
       // Garante que o estado de "em locução" seja limpo mesmo se algo abaixo
       // der curto-circuito (queue vazia, idx inválido, etc).
       setCurrentJingle(null);
@@ -765,20 +866,26 @@ export default function PlayerPage() {
         playTrack(safeIdx, 0);
       }
     };
+
     let hasLoggedJingle = false;
     audio.onplaying = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
       if (!hasLoggedJingle) {
         hasLoggedJingle = true;
         logPlayback.mutate({ data: { mediaId: jingle.id, uuid, email } });
       }
     };
+
     audio.onended = () => {
       resumeOrAdvance();
     };
+
     audio.onerror = () => {
       console.error("Erro carregando locução:", jingle.url);
       resumeOrAdvance();
     };
+
     setIsPlaying(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jinglesPool, scheduledItems, currentIdx, muted, uuid, email, playTrack]);
@@ -811,6 +918,8 @@ export default function PlayerPage() {
   // Roda toda vez que: muda música tocando, queue muda, pause/resume, etc.
   useEffect(() => {
     clearTimeModeTimers();
+    setJingleTimeRemaining(null);
+    jingleTargetTimeRef.current = null;
     if (queue?.jingleMode !== "time") return;
     if (playerState !== "active") return;
     if (!started || !isPlaying) return;
@@ -818,6 +927,9 @@ export default function PlayerPage() {
     if (jinglesPool.length === 0) return;
     if (!scheduledItems.length) return;
     const seconds = Math.max(2, queue?.jingleIntervalSeconds ?? 900);
+    jingleTargetTimeRef.current = Date.now() + seconds * 1000;
+    setJingleTimeRemaining(seconds);
+
     const fadeAtMs = Math.max(0, (seconds * 1000) - FADE_OUT_MS);
     fadeStartTimerRef.current = setTimeout(() => {
       startFadeOut();
@@ -825,7 +937,20 @@ export default function PlayerPage() {
     jingleTriggerTimerRef.current = setTimeout(() => {
       playJingleInterrupt();
     }, seconds * 1000);
-    return () => clearTimeModeTimers();
+
+    const intervalTicker = setInterval(() => {
+      if (jingleTargetTimeRef.current) {
+        const remaining = Math.max(0, Math.round((jingleTargetTimeRef.current - Date.now()) / 1000));
+        setJingleTimeRemaining(remaining);
+      }
+    }, 1000);
+
+    return () => {
+      clearTimeModeTimers();
+      clearInterval(intervalTicker);
+      setJingleTimeRemaining(null);
+      jingleTargetTimeRef.current = null;
+    };
   }, [
     queue?.jingleMode,
     queue?.jingleIntervalSeconds,
@@ -858,8 +983,20 @@ export default function PlayerPage() {
   const handlePlayPause = () => {
     if (!started) { handleStart(); return; }
     if (!audioRef.current) return;
+    if (isBufferingRef.current) {
+      toast({
+        title: "Conectando áudio...",
+        description: "Carregando a faixa e iniciando transmissão. Aguarde um instante.",
+      });
+      return;
+    }
     if (isPlaying) { audioRef.current.pause(); setIsPlaying(false); }
-    else { audioRef.current.play(); setIsPlaying(true); }
+    else {
+      audioRef.current.play().catch((err) => {
+        console.error("Erro ao retomar áudio:", err);
+      });
+      setIsPlaying(true);
+    }
   };
 
   const handlePrev = () => {
@@ -888,9 +1025,43 @@ export default function PlayerPage() {
   // fazendo a rotação para o final conforme vai tocando.
   const upcoming = useMemo(() => {
     const list = scheduledItems;
-    if (list.length === 0) return [] as Array<{ item: typeof list[number]; absoluteIdx: number; songIndex?: number }>;
+    if (list.length === 0 && !currentJingle) {
+      return [] as Array<{
+        item: QueueItem;
+        absoluteIdx: number;
+        songIndex?: number;
+        isTimedSpot?: boolean;
+        isCurrentInterrupt?: boolean;
+      }>;
+    }
+
+    const out: Array<{
+      item: QueueItem;
+      absoluteIdx: number;
+      songIndex?: number;
+      isTimedSpot?: boolean;
+      isCurrentInterrupt?: boolean;
+    }> = [];
+
+    // Se estiver tocando uma locução/jingle no modo "time", exibe na posição 0 com destaque
+    if (currentJingle) {
+      out.push({
+        item: {
+          ...currentJingle,
+          duration: (audioRef.current && Number.isFinite(audioRef.current.duration)) ? audioRef.current.duration : 0,
+        } as any,
+        absoluteIdx: -1,
+        isCurrentInterrupt: true,
+      });
+    }
+
+    if (list.length === 0) return out;
+
     const total = list.length;
-    const out: Array<{ item: typeof list[number]; absoluteIdx: number; songIndex?: number }> = [];
+    const isTimeMode = queue?.jingleMode === "time";
+    const intervalSec = Math.max(30, queue?.jingleIntervalSeconds ?? 900);
+    // Intervalo de músicas entre spots no modo tempo (~180s por música)
+    const intervalInSongs = Math.max(1, Math.round(intervalSec / 180));
 
     // Mapeia o número da música (1 a N) ignorando jingles e locuções para clareza visual
     const songIndexMap = new Map<number, number>();
@@ -902,16 +1073,31 @@ export default function PlayerPage() {
       }
     });
 
+    let spotCycle = jingleCycleRef.current;
+
     for (let k = 0; k < total; k++) {
       const idx = (currentIdx + k) % total;
+      const songItem = list[idx]!;
+
+      // No modo "time", insere visualmente o spot programado entre as músicas na fila
+      if (isTimeMode && jinglesPool.length > 0 && k > 0 && k % intervalInSongs === 0) {
+        const spot = jinglesPool[spotCycle % jinglesPool.length]!;
+        spotCycle++;
+        out.push({
+          item: spot,
+          absoluteIdx: -1,
+          isTimedSpot: true,
+        });
+      }
+
       out.push({
-        item: list[idx]!,
+        item: songItem,
         absoluteIdx: idx,
         songIndex: songIndexMap.get(idx),
       });
     }
     return out;
-  }, [scheduledItems, currentIdx]);
+  }, [scheduledItems, currentIdx, currentJingle, queue?.jingleMode, queue?.jingleIntervalSeconds, jinglesPool]);
 
   const handleEmailSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1131,8 +1317,9 @@ export default function PlayerPage() {
 
   // Distance until the next locução in the upcoming window (excluding current).
   const tracksUntilJingle = (() => {
+    if (queue?.jingleMode === "time") return null;
     for (let k = 1; k < upcoming.length; k++) {
-      if (upcoming[k]!.item.type === "jingle") return k;
+      if (upcoming[k]!.item.type === "jingle" || upcoming[k]!.item.type === "voiceover") return k;
     }
     return null;
   })();
@@ -1453,17 +1640,29 @@ export default function PlayerPage() {
             </button>
           ) : null}
 
-          {/* Status badge — hidden on mobile to save space */}
-          <div className={`hidden sm:flex items-center gap-2 px-3 py-1.5 rounded uppercase text-xs font-bold tracking-widest border ${
-            isPlaying
+          {/* Status badge */}
+          <div className={`hidden sm:flex items-center gap-2 px-3 py-1.5 rounded uppercase text-xs font-bold tracking-widest border transition-all ${
+            isBuffering
+              ? "bg-amber-500/15 border-amber-500/50 text-amber-300"
+              : isPlaying
               ? "bg-[var(--dj-magenta-glow)] border-[var(--dj-magenta)] text-[var(--dj-magenta)]"
               : "bg-[var(--dj-accent)]/30 border-[var(--dj-border)] text-[var(--dj-muted)]"
           }`}>
-            <div className={`w-2 h-2 rounded-full flex-none ${isPlaying ? "bg-[var(--dj-magenta)] dj-animate-live" : "bg-[var(--dj-muted)]"}`} />
-            <span>{isPlaying ? "Ao Vivo" : "Pausado"}</span>
+            {isBuffering ? (
+              <Loader2 className="w-3 h-3 text-amber-400 animate-spin flex-none" />
+            ) : (
+              <div className={`w-2 h-2 rounded-full flex-none ${isPlaying ? "bg-[var(--dj-magenta)] dj-animate-live" : "bg-[var(--dj-muted)]"}`} />
+            )}
+            <span>{isBuffering ? "Conectando..." : isPlaying ? "Ao Vivo" : "Pausado"}</span>
           </div>
-          {/* Mobile: just the live dot */}
-          <div className={`sm:hidden w-2 h-2 rounded-full ${isPlaying ? "bg-[var(--dj-magenta)] dj-animate-live" : "bg-[var(--dj-muted)]"}`} />
+          {/* Mobile: live/buffering indicator */}
+          <div className="sm:hidden flex items-center">
+            {isBuffering ? (
+              <Loader2 className="w-3 h-3 text-amber-400 animate-spin" />
+            ) : (
+              <div className={`w-2 h-2 rounded-full ${isPlaying ? "bg-[var(--dj-magenta)] dj-animate-live" : "bg-[var(--dj-muted)]"}`} />
+            )}
+          </div>
         </div>
       </header>
 
@@ -1542,7 +1741,10 @@ export default function PlayerPage() {
                 )}
               </div>
               {/* Time */}
-              <span className="text-[11px] dj-mono text-[var(--dj-muted)] flex-none">{fmtMMSS(currentTime)}</span>
+              <div className="flex items-center gap-1 flex-none">
+                {isBuffering && <Loader2 className="w-2.5 h-2.5 text-amber-400 animate-spin" />}
+                <span className="text-[11px] dj-mono text-[var(--dj-muted)]">{fmtMMSS(currentTime)} / {fmtMMSS(duration)}</span>
+              </div>
             </div>
             {/* Progress bar */}
             <div className="px-3 pb-2">
@@ -1553,8 +1755,17 @@ export default function PlayerPage() {
           {/* ── DESKTOP: full centered now-playing card ── */}
           <div className="hidden lg:flex flex-1 bg-[var(--dj-panel)] border border-[var(--dj-border)] rounded-lg flex-col p-6 shadow-lg relative overflow-hidden min-h-0">
             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-[var(--dj-cyan)] to-[var(--dj-magenta)] opacity-50" />
-            <h2 className="text-xs uppercase font-bold text-[var(--dj-muted)] tracking-widest mb-4 flex justify-between flex-none">
-              <span>Status de Reprodução</span>
+            <h2 className="text-xs uppercase font-bold text-[var(--dj-muted)] tracking-widest mb-4 flex justify-between items-center flex-none">
+              <span className="flex items-center gap-1.5">
+                {isBuffering ? (
+                  <span className="flex items-center gap-1.5 text-amber-400">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                    Conectando áudio...
+                  </span>
+                ) : (
+                  <span>Status de Reprodução</span>
+                )}
+              </span>
               <span className="dj-mono text-[var(--dj-cyan)]">{fmtMMSS(currentTime)} / {fmtMMSS(duration)}</span>
             </h2>
             <div className="flex-1 flex flex-col items-center justify-center text-center px-2 min-h-0">
@@ -1624,12 +1835,22 @@ export default function PlayerPage() {
               disabled={!items.length}
               aria-label={isPlaying ? "Pausar" : "Tocar"}
               aria-pressed={isPlaying}
-              title={isPlaying ? "Pausar" : "Tocar"}
+              title={isBuffering ? "Conectando ao servidor..." : isPlaying ? "Pausar" : "Tocar"}
               className={`w-11 h-11 sm:w-13 sm:h-13 lg:w-16 lg:h-16 rounded-lg flex items-center justify-center transition-all disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed ${
-                isPlaying ? "bg-[var(--dj-cyan)] text-[#060a14] shadow-[0_0_15px_var(--dj-cyan-glow)]" : "bg-[var(--dj-accent)] text-[var(--dj-text)]"
+                isBuffering
+                  ? "bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-[0_0_15px_rgba(245,158,11,0.2)]"
+                  : isPlaying
+                  ? "bg-[var(--dj-cyan)] text-[#060a14] shadow-[0_0_15px_var(--dj-cyan-glow)]"
+                  : "bg-[var(--dj-accent)] text-[var(--dj-text)]"
               }`}
             >
-              {isPlaying ? <Pause className="w-5 h-5 sm:w-6 sm:h-6 lg:w-8 lg:h-8" /> : <Play className="w-5 h-5 sm:w-6 sm:h-6 lg:w-8 lg:h-8 ml-0.5" />}
+              {isBuffering ? (
+                <Loader2 className="w-5 h-5 sm:w-6 sm:h-6 lg:w-8 lg:h-8 animate-spin text-amber-400" />
+              ) : isPlaying ? (
+                <Pause className="w-5 h-5 sm:w-6 sm:h-6 lg:w-8 lg:h-8" />
+              ) : (
+                <Play className="w-5 h-5 sm:w-6 sm:h-6 lg:w-8 lg:h-8 ml-0.5" />
+              )}
             </button>
             <button
               data-testid="button-next"
@@ -1650,13 +1871,67 @@ export default function PlayerPage() {
             <h2 className="text-[10px] lg:text-xs uppercase font-bold text-[var(--dj-muted)] tracking-widest flex items-center gap-1.5">
               <Hash className="w-3 h-3 lg:w-4 lg:h-4" /> Fila ({musicCount} {musicCount === 1 ? "música" : "músicas"}{commercialCount > 0 ? ` • ${commercialCount} spots` : ""})
             </h2>
-            {tracksUntilJingle !== null && (
+            {queue?.jingleMode === "time" ? (
+              <div className="flex items-center gap-1.5 bg-amber-500/10 border border-amber-500/30 text-amber-300 px-2 py-0.5 rounded text-[9px] uppercase font-bold tracking-wider">
+                <Clock className="w-2.5 h-2.5 text-amber-400" />
+                {jingleTimeRemaining !== null
+                  ? `Próximo spot em ${fmtMMSS(jingleTimeRemaining)}`
+                  : `A cada ${fmtMMSS(queue?.jingleIntervalSeconds ?? 900)}`}
+              </div>
+            ) : tracksUntilJingle !== null ? (
               <div className="flex items-center gap-1.5 bg-[var(--dj-magenta-glow)] border border-[var(--dj-magenta)] text-[var(--dj-magenta)] px-2 py-0.5 rounded text-[9px] uppercase font-bold tracking-wider">
                 <AlertCircle className="w-2.5 h-2.5" />
                 T-{tracksUntilJingle} próxima vinheta/locução
               </div>
-            )}
+            ) : null}
           </div>
+
+          {/* Grade Comercial Ativa (Modo por Tempo) */}
+          {queue?.jingleMode === "time" && jinglesPool.length > 0 && (
+            <div className="p-2 sm:p-2.5 bg-gradient-to-r from-amber-500/10 via-pink-500/10 to-transparent border-b border-[var(--dj-border)] flex flex-col gap-1.5 flex-none">
+              <div className="flex items-center justify-between text-[10px] font-bold">
+                <div className="flex items-center gap-1.5 text-amber-300 uppercase tracking-wider">
+                  <Megaphone className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Comerciais por Tempo ({jinglesPool.length})</span>
+                </div>
+                <span className="dj-mono text-[9px] text-[var(--dj-cyan)] bg-[var(--dj-bg)] px-1.5 py-0.5 rounded border border-[var(--dj-border)]">
+                  {jingleTimeRemaining !== null ? `Próximo em ${fmtMMSS(jingleTimeRemaining)}` : `A cada ${fmtMMSS(queue?.jingleIntervalSeconds ?? 900)}`}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-thin">
+                {jinglesPool.map((spot) => {
+                  const isSpotJingle = spot.type === "jingle";
+                  const isSpotPlaying = currentJingle?.id === spot.id;
+                  return (
+                    <button
+                      key={`spot-pool-${spot.id}`}
+                      type="button"
+                      onClick={() => playJingleInterrupt(spot)}
+                      title={`Clique para disparar agora: ${spot.title}`}
+                      className={`flex items-center gap-1.5 px-2 py-1 rounded text-left flex-none max-w-[200px] border transition-all cursor-pointer ${
+                        isSpotPlaying
+                          ? "bg-[var(--dj-magenta-glow)] border-[var(--dj-magenta)] text-white shadow-[0_0_10px_var(--dj-magenta-glow)]"
+                          : isSpotJingle
+                          ? "bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20"
+                          : "bg-pink-500/10 border-pink-500/30 text-pink-300 hover:bg-pink-500/20"
+                      }`}
+                    >
+                      <span className="text-[10px]">{isSpotJingle ? "🔔" : "🎙️"}</span>
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-bold truncate leading-tight">{spot.title}</p>
+                        <p className="text-[8px] dj-mono opacity-80">{spot.duration ? fmtMMSS(spot.duration) : "Spot"}</p>
+                      </div>
+                      {isSpotPlaying ? (
+                        <Activity className="w-2.5 h-2.5 flex-none text-[var(--dj-magenta)] animate-pulse" />
+                      ) : (
+                        <Play className="w-2 h-2 flex-none opacity-60 ml-0.5" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <div className="flex-1 overflow-y-auto relative">
             {isQueueFetching && !queue && (
@@ -1669,7 +1944,8 @@ export default function PlayerPage() {
               <div className="p-4 text-xs text-[var(--dj-muted)] text-center">Fila vazia</div>
             ) : (
               <div className="p-1.5 space-y-0.5">
-                {upcoming.map(({ item, absoluteIdx, songIndex }, displayPos) => {
+                {upcoming.map((entry, displayPos) => {
+                  const { item, absoluteIdx, songIndex, isTimedSpot, isCurrentInterrupt } = entry;
                   const isCurrent = displayPos === 0;
                   const isJingle = item.type === "jingle";
                   const isVoiceover = item.type === "voiceover";
@@ -1681,43 +1957,77 @@ export default function PlayerPage() {
                     : "bg-[var(--dj-cyan-glow)] border-[var(--dj-cyan)]";
                   const itemBarClass = isJingle ? "bg-amber-400" : isVoiceover ? "bg-[var(--dj-magenta)]" : "bg-[var(--dj-cyan)]";
 
+                  const handleItemClick = () => {
+                    if (isTimedSpot || isCurrentInterrupt) {
+                      playJingleInterrupt(item);
+                    } else if (absoluteIdx >= 0) {
+                      jumpTo(absoluteIdx);
+                    }
+                  };
+
                   return (
                     <div
-                      key={`${absoluteIdx}-${item.id}`}
+                      key={`queue-${displayPos}-${item.id}-${isTimedSpot ? "timed" : absoluteIdx}`}
                       data-testid={`queue-item-${item.id}`}
                       role="button"
                       tabIndex={0}
                       aria-label={`Tocar ${item.title}${item.artist ? ` de ${item.artist}` : ""}`}
                       aria-current={isCurrent ? "true" : undefined}
-                      onClick={() => jumpTo(absoluteIdx)}
+                      onClick={handleItemClick}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
-                          jumpTo(absoluteIdx);
+                          handleItemClick();
                         }
                       }}
                       className={`flex items-center gap-2 px-2 py-1.5 lg:p-3 rounded cursor-pointer transition-colors group border focus:outline-none focus:ring-1 focus:ring-[var(--dj-cyan)] ${
                         isCurrent
                           ? itemBgClass
+                          : isTimedSpot
+                          ? "bg-amber-500/5 border-amber-500/25 hover:bg-amber-500/15"
                           : "bg-transparent border-transparent hover:bg-[var(--dj-panel-hover)]"
                       }`}
                     >
                       <div className="w-5 text-center text-[10px] dj-mono text-[var(--dj-muted)] flex-none">
-                        {isCurrent
-                          ? (isPlaying ? <Activity className={`w-3 h-3 mx-auto ${itemColorClass}`} /> : "⏸")
-                          : isVoiceover ? "🎙️" : isJingle ? "🔔" : (songIndex ?? displayPos + 1)}
+                        {isCurrent ? (
+                          isBuffering ? (
+                            <Loader2 className="w-3 h-3 mx-auto animate-spin text-amber-400" />
+                          ) : isPlaying ? (
+                            <Activity className={`w-3 h-3 mx-auto ${itemColorClass}`} />
+                          ) : (
+                            "⏸"
+                          )
+                        ) : isTimedSpot ? (
+                          <Clock className="w-3 h-3 mx-auto text-amber-400" />
+                        ) : isVoiceover ? (
+                          "🎙️"
+                        ) : isJingle ? (
+                          "🔔"
+                        ) : (
+                          songIndex ?? displayPos + 1
+                        )}
                       </div>
                       <div className="w-1 h-6 rounded-full flex-none bg-[var(--dj-accent)] overflow-hidden">
-                        <div className={`w-full h-full ${itemBarClass} ${isCurrent ? "opacity-100" : "opacity-30 group-hover:opacity-60"}`} />
+                        <div className={`w-full h-full ${itemBarClass} ${isCurrent ? "opacity-100" : isTimedSpot ? "opacity-70" : "opacity-30 group-hover:opacity-60"}`} />
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className={`text-xs font-semibold truncate ${
-                          isCurrent ? itemColorClass : "text-[var(--dj-text)]"
+                          isCurrent ? itemColorClass : isTimedSpot ? "text-amber-300 font-bold" : "text-[var(--dj-text)]"
                         }`}>
                           {item.title}
                         </p>
                         <p className="text-[10px] text-[var(--dj-muted)] truncate">
-                          {item.type === "jingle" ? "🔔 Jingle" : item.type === "voiceover" ? "🎙️ Locução" : item.artist ?? "—"}
+                          {isCurrentInterrupt ? (
+                            <span className="text-amber-400 font-bold">🔊 Interrupção comercial ativa</span>
+                          ) : isTimedSpot ? (
+                            <span className="text-amber-400/90 font-mono">⏰ Interrupção programada a cada {fmtMMSS(queue?.jingleIntervalSeconds ?? 900)}</span>
+                          ) : item.type === "jingle" ? (
+                            "🔔 Jingle comercial"
+                          ) : item.type === "voiceover" ? (
+                            "🎙️ Locução institucional"
+                          ) : (
+                            item.artist ?? "—"
+                          )}
                         </p>
                       </div>
                       <div className="text-[10px] dj-mono text-[var(--dj-muted)] flex-none">
