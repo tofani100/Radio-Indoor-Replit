@@ -627,9 +627,14 @@ export default function PlayerPage() {
     audio.play().catch((err) => {
       console.error("Falha ao tocar áudio:", track.url, err);
     });
+    let hasLoggedTrack = false;
     audio.onplaying = () => {
       consecutiveErrorsRef.current = 0;
       setLoadError(null);
+      if (!hasLoggedTrack) {
+        hasLoggedTrack = true;
+        logPlayback.mutate({ data: { mediaId: track.id, uuid, email } });
+      }
     };
     audio.onloadedmetadata = () => {
       setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
@@ -638,7 +643,6 @@ export default function PlayerPage() {
       setCurrentTime(audio.currentTime);
     };
     audio.onended = () => {
-      logPlayback.mutate({ data: { mediaId: track.id, uuid, email } });
       const currentList = scheduledItemsRef.current;
       if (!currentList.length) return;
       const next = (idx + 1) % currentList.length;
@@ -761,8 +765,14 @@ export default function PlayerPage() {
         playTrack(safeIdx, 0);
       }
     };
+    let hasLoggedJingle = false;
+    audio.onplaying = () => {
+      if (!hasLoggedJingle) {
+        hasLoggedJingle = true;
+        logPlayback.mutate({ data: { mediaId: jingle.id, uuid, email } });
+      }
+    };
     audio.onended = () => {
-      logPlayback.mutate({ data: { mediaId: jingle.id, uuid, email } });
       resumeOrAdvance();
     };
     audio.onerror = () => {
