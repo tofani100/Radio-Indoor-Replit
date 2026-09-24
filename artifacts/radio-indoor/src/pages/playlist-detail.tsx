@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, GripVertical, Plus, Trash2, Music, Mic, ToggleLeft, ToggleRight, Search, CheckSquare, Square, Loader2, Settings2, Eye, EyeOff, Upload, CheckCircle2, XCircle } from "lucide-react";
+import { ArrowLeft, GripVertical, Plus, Trash2, Music, Mic, ToggleLeft, ToggleRight, Search, CheckSquare, Square, Loader2, Settings2, Eye, EyeOff, Upload, CheckCircle2, XCircle, Building2 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -489,106 +489,175 @@ export default function PlaylistDetailPage() {
   if (!playlist) return <div className="p-8 text-muted-foreground">Playlist nao encontrada</div>;
 
   return (
-    <div className="p-4 sm:p-8 max-w-3xl">
-      <button onClick={() => setLocation("/playlists")} className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mb-6 transition-colors" data-testid="link-back">
-        <ArrowLeft className="w-4 h-4" /> Voltar
-      </button>
+    <div className="p-4 sm:p-8 max-w-6xl">
+      <div className="flex items-center justify-between mb-4">
+        <button
+          onClick={() => setLocation("/playlists")}
+          className="inline-flex items-center gap-2 text-xs font-semibold text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-lg hover:bg-muted transition-colors"
+          data-testid="link-back"
+        >
+          <ArrowLeft className="w-4 h-4" /> Voltar para Playlists
+        </button>
+      </div>
 
-      <div className="flex items-start justify-between mb-8 gap-4">
-        <div className="flex items-start gap-4 min-w-0">
-          {(playlist as any)?.coverUrl ? (
-            <img
-              src={(playlist as any).coverUrl}
-              alt={playlist.name}
-              className="w-20 h-20 rounded-xl object-cover border shadow-sm flex-none"
-            />
-          ) : (
-            <div className="w-20 h-20 rounded-xl bg-primary/10 border flex items-center justify-center text-primary flex-none">
-              <Music className="w-8 h-8" />
-            </div>
-          )}
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-2xl font-semibold text-foreground" data-testid="text-playlist-name">{playlist.name}</h1>
-              {(playlist as any)?.genre && (
-                <span className="text-xs px-2 py-0.5 rounded-md bg-primary/10 text-primary font-bold uppercase">
-                  {(playlist as any).genre}
-                </span>
-              )}
-              {(playlist as any)?.isGlobal && (
-                <span className="text-xs px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 font-bold uppercase">
-                  🌐 Acervo Global
-                </span>
-              )}
-            </div>
-            {currentClient && (
-              <p className="text-sm text-muted-foreground mt-1" data-testid="text-playlist-client">
-                Cliente: <span className="font-medium text-foreground">{currentClient.name}</span>
-              </p>
+      {/* Hero Header Card */}
+      <div className="bg-card border border-card-border rounded-2xl p-5 sm:p-6 mb-8 shadow-xs">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+          {/* Left: Artwork + Title + Metadata */}
+          <div className="flex items-start sm:items-center gap-4 sm:gap-5 min-w-0">
+            {(playlist as any)?.coverUrl ? (
+              <img
+                src={(playlist as any).coverUrl}
+                alt={playlist.name}
+                className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl object-cover border shadow-xs flex-none"
+              />
+            ) : (
+              <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-gradient-to-br from-purple-500/10 via-primary/10 to-blue-500/10 border border-card-border flex items-center justify-center text-primary flex-none shadow-xs">
+                <Music className="w-8 h-8 sm:w-10 sm:h-10 text-primary/80" />
+              </div>
             )}
-            <p className="text-xs text-muted-foreground mt-0.5">{playlist.items?.length ?? 0} faixas · modo {playlist.playbackMode}</p>
-          {currentClient && (
-            <button
-              type="button"
-              data-testid="button-jingle-config"
-              onClick={() => {
-                setJingleForm({
-                  jingleMode: (currentClient.jingleMode as "interval" | "ordered" | "time") ?? "interval",
-                  jingleInterval: String(currentClient.jingleInterval ?? 3),
-                  jingleCount: String((currentClient as any).jingleCount ?? 1),
-                  voiceoverCount: String((currentClient as any).voiceoverCount ?? 1),
-                  jingleIntervalSeconds: String(currentClient.jingleIntervalSeconds ?? 900),
-                });
-                setJingleConfigOpen(true);
-              }}
-              className="mt-2 inline-flex items-center gap-2 text-xs px-3 py-1.5 rounded-full bg-purple-500/10 text-purple-700 hover:bg-purple-500/20 border border-purple-500/20 transition-colors font-medium"
-            >
-              <Mic className="w-3 h-3" />
-              {currentClient.jingleMode === "interval"
-                ? `A cada ${currentClient.jingleInterval ?? 3} mús: ${(currentClient as any).jingleCount ?? 1} jingle, ${(currentClient as any).voiceoverCount ?? 1} loc`
-                : currentClient.jingleMode === "time"
-                  ? `Interrompe música a cada ${secondsToHms(currentClient.jingleIntervalSeconds ?? 900)}`
-                  : "Ordem da playlist"}
-              <Settings2 className="w-3 h-3 opacity-60" />
-            </button>
-          )}
+
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-foreground tracking-tight" data-testid="text-playlist-name">
+                  {playlist.name}
+                </h1>
+                {(playlist as any)?.genre && (
+                  <span className="text-[11px] px-2.5 py-0.5 rounded-md bg-primary/10 text-primary font-bold uppercase tracking-wider">
+                    {(playlist as any).genre}
+                  </span>
+                )}
+                {(playlist as any)?.isGlobal && (
+                  <span className="text-[11px] px-2.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 font-bold uppercase tracking-wider">
+                    🌐 Acervo Global
+                  </span>
+                )}
+              </div>
+
+              {currentClient && (
+                <p className="text-xs sm:text-sm text-muted-foreground flex items-center gap-1.5" data-testid="text-playlist-client">
+                  <Building2 className="w-3.5 h-3.5 text-muted-foreground/70" />
+                  Cliente: <span className="font-semibold text-foreground">{currentClient.name}</span>
+                </p>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <span className="text-xs px-2.5 py-1 rounded-lg bg-muted text-muted-foreground font-medium">
+                  {playlist.items?.length ?? 0} faixas
+                </span>
+
+                <button
+                  type="button"
+                  data-testid="button-toggle-mode"
+                  onClick={() =>
+                    update.mutate({
+                      playlistId,
+                      data: { playbackMode: playlist.playbackMode === "sequential" ? "shuffle" : "sequential" },
+                    })
+                  }
+                  className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg bg-muted hover:bg-muted/80 text-foreground transition-colors font-medium border border-border/50"
+                  title="Clique para alternar entre Sequencial e Aleatório"
+                >
+                  {playlist.playbackMode === "sequential" ? (
+                    <ToggleLeft className="w-4 h-4 text-muted-foreground" />
+                  ) : (
+                    <ToggleRight className="w-4 h-4 text-primary" />
+                  )}
+                  <span>Modo {playlist.playbackMode === "sequential" ? "Sequencial" : "Aleatório"}</span>
+                </button>
+
+                {currentClient && (
+                  <button
+                    type="button"
+                    data-testid="button-jingle-config"
+                    onClick={() => {
+                      setJingleForm({
+                        jingleMode: (currentClient.jingleMode as "interval" | "ordered" | "time") ?? "interval",
+                        jingleInterval: String(currentClient.jingleInterval ?? 3),
+                        jingleCount: String((currentClient as any).jingleCount ?? 1),
+                        voiceoverCount: String((currentClient as any).voiceoverCount ?? 1),
+                        jingleIntervalSeconds: String(currentClient.jingleIntervalSeconds ?? 900),
+                      });
+                      setJingleConfigOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full bg-purple-500/10 text-purple-700 hover:bg-purple-500/20 border border-purple-500/20 transition-colors font-medium"
+                    title="Configurar intervalo e regras de locuções"
+                  >
+                    <Mic className="w-3 h-3" />
+                    <span>
+                      {currentClient.jingleMode === "interval"
+                        ? `A cada ${currentClient.jingleInterval ?? 3} mús: ${(currentClient as any).jingleCount ?? 1} jingle, ${(currentClient as any).voiceoverCount ?? 1} loc`
+                        : currentClient.jingleMode === "time"
+                        ? `Interrompe a cada ${secondsToHms(currentClient.jingleIntervalSeconds ?? 900)}`
+                        : "Ordem da playlist"}
+                    </span>
+                    <Settings2 className="w-3 h-3 opacity-60 ml-0.5" />
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            data-testid="button-toggle-mode"
-            onClick={() => update.mutate({ playlistId, data: { playbackMode: playlist.playbackMode === "sequential" ? "shuffle" : "sequential" } })}
-            className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground border border-border rounded-lg px-3 py-2 transition-colors"
-          >
-            {playlist.playbackMode === "sequential" ? <ToggleLeft className="w-4 h-4" /> : <ToggleRight className="w-4 h-4 text-primary" />}
-            {playlist.playbackMode === "sequential" ? "Sequencial" : "Aleatório"}
-          </button>
-          {localItems.length > 0 && (
+
+          {/* Right: Actions Bar */}
+          <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 pt-4 lg:pt-0 border-t lg:border-t-0 border-card-border/60">
+            {localItems.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="button-clear-playlist"
+                onClick={handleClearAll}
+                className="text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30 text-xs h-9"
+                title="Remover todas as faixas desta playlist"
+              >
+                <Trash2 className="w-3.5 h-3.5 mr-1.5" /> Limpar Faixas
+              </Button>
+            )}
             <Button
               variant="outline"
-              data-testid="button-clear-playlist"
-              onClick={handleClearAll}
-              className="text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30"
-              title="Remover todas as faixas desta playlist"
+              size="sm"
+              data-testid="button-add-item"
+              onClick={() => {
+                setAddOpen(true);
+                setSelected(new Set());
+                setSearch("");
+                setTypeFilter("all");
+                setAddProgress(0);
+              }}
+              className="gap-1.5 text-xs h-9"
             >
-              <Trash2 className="w-4 h-4 mr-2" /> Limpar Faixas
+              <Search className="w-3.5 h-3.5" />
+              <span>Buscar na Biblioteca</span>
             </Button>
-          )}
-          <Button
-            variant="outline"
-            data-testid="button-add-item"
-            onClick={() => { setAddOpen(true); setSelected(new Set()); setSearch(""); setTypeFilter("all"); setAddProgress(0); }}
-          >
-            Buscar na Biblioteca
-          </Button>
-          <Button
-            onClick={() => { setDirectUploadOpen(true); setDirectUploadItems([]); }}
-            className="gap-1.5 bg-primary hover:bg-primary/90 shadow-sm"
-          >
-            <Upload className="w-4 h-4" />
-            <span>+ Subir Jingle / Locução</span>
-          </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                setDirectUploadOpen(true);
+                setDirectUploadItems([]);
+              }}
+              className="gap-1.5 bg-primary hover:bg-primary/90 text-xs h-9 shadow-xs"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>+ Subir Jingle / Locução</span>
+            </Button>
+          </div>
         </div>
+      </div>
+
+      {/* Playlist Items Header */}
+      <div className="flex items-center justify-between mb-3 px-1">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-foreground">
+            Faixas na Programação
+          </h2>
+          <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-mono font-medium">
+            {localItems.length}
+          </span>
+        </div>
+        {localItems.length > 1 && (
+          <p className="text-xs text-muted-foreground hidden sm:block">
+            Arraste pelo ícone <GripVertical className="w-3 h-3 inline text-muted-foreground/60" /> para redefinir a sequência de execução
+          </p>
+        )}
       </div>
 
       {!localItems.length ? (

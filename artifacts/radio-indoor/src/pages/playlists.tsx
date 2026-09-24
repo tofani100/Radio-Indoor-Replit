@@ -121,7 +121,7 @@ export default function PlaylistsPage() {
   const clientCommercialPlaylists = (playlists ?? []).filter((p) => !p.isGlobal);
 
   return (
-    <div className="p-4 sm:p-8 max-w-5xl">
+    <div className="p-4 sm:p-8 max-w-6xl">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
