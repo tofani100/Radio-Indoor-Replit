@@ -794,7 +794,7 @@ export async function getPlaybackLogs(options?: {
 
 async function seedDefaultPlaybackLogsIfEmpty(targetArray: DBPlaybackLog[]): Promise<void> {
   try {
-    const SEED_FLAG_KEY = "radio_indoor_playback_seeded_v2";
+    const SEED_FLAG_KEY = "radio_indoor_playback_seeded_v5";
     if (typeof window !== "undefined" && window.localStorage?.getItem(SEED_FLAG_KEY)) return;
 
     const allClients = await getAll<DBClient>("clients");
@@ -811,55 +811,60 @@ async function seedDefaultPlaybackLogsIfEmpty(targetArray: DBPlaybackLog[]): Pro
     let logCounter = Date.now() - 30 * 86400000;
 
     for (const client of allClients) {
-      const authEmails = extractClientAuthorizedEmails(client);
-      const email = authEmails[0] || client.email || "loja@empresa.com.br";
-      const dev = allDevices.find((d) => d.clientId === client.id) || { uuid: "dev-terminal-01", id: 1 };
+      const units = extractClientUnits(client);
+      const targets = units.length > 0 ? units : [{ email: client.email || "loja@empresa.com.br", name: client.name }];
 
-      // Generate sessions across the last 30 days
-      for (let day = 29; day >= 0; day--) {
-        const baseDate = new Date(Date.now() - day * 86400000);
-        // 2 sessions per day: morning (09:00 - 13:00) and afternoon (14:00 - 19:00)
-        const sessionStarts = [9, 14];
+      for (let unitIdx = 0; unitIdx < targets.length; unitIdx++) {
+        const unit = targets[unitIdx]!;
+        const email = unit.email;
+        const dev = allDevices.find((d) => d.clientId === client.id) || { uuid: `dev-terminal-0${unitIdx + 1}`, id: unitIdx + 1 };
 
-        for (const startHour of sessionStarts) {
-          const sessionStart = new Date(baseDate);
-          sessionStart.setHours(startHour, 10 + Math.floor(Math.random() * 20), 0, 0);
+        // Generate sessions across the last 30 days
+        for (let day = 29; day >= 0; day--) {
+          const baseDate = new Date(Date.now() - day * 86400000);
+          // 2 sessions per day: morning (09:00 - 13:00) and afternoon (14:00 - 19:00)
+          const sessionStarts = [9, 14];
 
-          let currentPlayTime = sessionStart.getTime();
-          const sessionDurationMs = (startHour === 9 ? 3.5 : 4.5) * 3600000;
-          const sessionEndTime = currentPlayTime + sessionDurationMs;
+          for (const startHour of sessionStarts) {
+            const sessionStart = new Date(baseDate);
+            sessionStart.setHours(startHour, 10 + Math.floor(Math.random() * 20), 0, 0);
 
-          let playsInSession = 0;
-          while (currentPlayTime < sessionEndTime && currentPlayTime < Date.now()) {
-            playsInSession++;
-            const isJinglePlay = playsInSession % 4 === 0; // Every 4 tracks, play a jingle/locução
-            const pickedMedia = isJinglePlay && mediaPool.length > 0
-              ? mediaPool[Math.floor(Math.random() * mediaPool.length)]
-              : (musics.length > 0 ? musics[Math.floor(Math.random() * musics.length)] : allMedia[0]);
+            let currentPlayTime = sessionStart.getTime();
+            const sessionDurationMs = (startHour === 9 ? 3.5 : 4.5) * 3600000;
+            const sessionEndTime = currentPlayTime + sessionDurationMs;
 
-            logCounter++;
-            const logEntry: DBPlaybackLog = {
-              id: logCounter,
-              clientId: client.id,
-              deviceId: dev.id,
-              deviceUuid: dev.uuid,
-              clientEmail: email,
-              mediaId: pickedMedia.id,
-              mediaTitle: pickedMedia.title,
-              mediaType: pickedMedia.type,
-              playedAt: new Date(currentPlayTime).toISOString(),
-              duration: pickedMedia.duration || (isJinglePlay ? 30 : 180),
-            };
+            let playsInSession = 0;
+            while (currentPlayTime < sessionEndTime && currentPlayTime < Date.now()) {
+              playsInSession++;
+              const isJinglePlay = playsInSession % 4 === 0; // Every 4 tracks, play a jingle/locução
+              const pickedMedia = isJinglePlay && mediaPool.length > 0
+                ? mediaPool[Math.floor(Math.random() * mediaPool.length)]
+                : (musics.length > 0 ? musics[Math.floor(Math.random() * musics.length)] : allMedia[0]);
 
-            seeded.push(logEntry);
-            currentPlayTime += (logEntry.duration || 180) * 1000 + 2000;
+              logCounter++;
+              const logEntry: DBPlaybackLog = {
+                id: logCounter,
+                clientId: client.id,
+                deviceId: dev.id,
+                deviceUuid: dev.uuid,
+                clientEmail: email,
+                mediaId: pickedMedia.id,
+                mediaTitle: pickedMedia.title,
+                mediaType: pickedMedia.type,
+                playedAt: new Date(currentPlayTime).toISOString(),
+                duration: pickedMedia.duration || (isJinglePlay ? 30 : 180),
+              };
+
+              seeded.push(logEntry);
+              currentPlayTime += (logEntry.duration || 180) * 1000 + 2000;
+            }
           }
         }
       }
     }
 
     if (seeded.length > 0) {
-      const batchToSave = seeded.slice(-400);
+      const batchToSave = seeded.slice(-800);
       for (const item of batchToSave) {
         await putLocal("playbackLogs", item);
         targetArray.push(item);
@@ -1112,6 +1117,41 @@ export function extractClientAuthorizedEmails(client: DBClient): string[] {
     set.add(client.email.trim().toLowerCase());
   }
   return Array.from(set);
+}
+
+export function extractClientUnits(client: DBClient): { name: string; email: string }[] {
+  const unitsMap = new Map<string, string>();
+  if (Array.isArray(client.units)) {
+    client.units.forEach((u) => {
+      if (u && typeof u.email === "string" && u.email.trim()) {
+        const em = u.email.trim().toLowerCase();
+        unitsMap.set(em, u.name ? u.name.trim() : em);
+      }
+    });
+  }
+  if (Array.isArray(client.authorizedEmails)) {
+    client.authorizedEmails.forEach((e, idx) => {
+      if (typeof e === "string" && e.trim()) {
+        const em = e.trim().toLowerCase();
+        if (!unitsMap.has(em)) {
+          unitsMap.set(em, `Filial ${idx + 1}`);
+        }
+      }
+    });
+  }
+  if (client.email && typeof client.email === "string" && client.email.trim()) {
+    const em = client.email.trim().toLowerCase();
+    if (!unitsMap.has(em)) {
+      unitsMap.set(em, client.name || "Matriz");
+    }
+  }
+  if (client.masterEmail && typeof client.masterEmail === "string" && client.masterEmail.trim()) {
+    const em = client.masterEmail.trim().toLowerCase();
+    if (!unitsMap.has(em)) {
+      unitsMap.set(em, "Acesso Master");
+    }
+  }
+  return Array.from(unitsMap.entries()).map(([email, name]) => ({ email, name }));
 }
 
 /**
@@ -2850,19 +2890,45 @@ export async function handleStandaloneRequest(
       s.durationMinutes = Math.round(((end - start) / 60_000 + TAIL_DURATION_MINUTES) * 10) / 10;
     }
 
-    // Per-email summary
+    // Per-email summary & Units mapping
+    const registeredUnits = extractClientUnits(client);
+    const unitNameByEmail = new Map(registeredUnits.map((u) => [u.email.toLowerCase(), u.name]));
+
     type EmailAgg = {
       email: string;
+      unitName: string;
       sessionsCount: number;
       totalDurationMinutes: number;
       jingles: Map<number, { mediaId: number; title: string; plays: number }>;
     };
     const byEmail = new Map<string, EmailAgg>();
-    for (const s of sessions) {
-      if (!byEmail.has(s.email)) {
-        byEmail.set(s.email, { email: s.email, sessionsCount: 0, totalDurationMinutes: 0, jingles: new Map() });
+
+    // Pre-populate all registered units so every branch is visible in the report
+    for (const u of registeredUnits) {
+      const em = u.email.toLowerCase();
+      if (!byEmail.has(em)) {
+        byEmail.set(em, {
+          email: u.email,
+          unitName: u.name,
+          sessionsCount: 0,
+          totalDurationMinutes: 0,
+          jingles: new Map(),
+        });
       }
-      const agg = byEmail.get(s.email)!;
+    }
+
+    for (const s of sessions) {
+      const em = s.email.toLowerCase();
+      if (!byEmail.has(em)) {
+        byEmail.set(em, {
+          email: s.email,
+          unitName: unitNameByEmail.get(em) || s.email,
+          sessionsCount: 0,
+          totalDurationMinutes: 0,
+          jingles: new Map(),
+        });
+      }
+      const agg = byEmail.get(em)!;
       agg.sessionsCount++;
       agg.totalDurationMinutes = Math.round((agg.totalDurationMinutes + s.durationMinutes) * 10) / 10;
       for (const [mid, jm] of s.jingleByMedia) {
@@ -2877,6 +2943,7 @@ export async function handleStandaloneRequest(
       .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
       .map((s) => ({
         email: s.email,
+        unitName: unitNameByEmail.get(s.email.toLowerCase()) || s.email,
         deviceUuid: s.deviceUuid,
         startedAt: s.startedAt,
         endedAt: s.endedAt,
@@ -2886,13 +2953,17 @@ export async function handleStandaloneRequest(
       }));
 
     const emailSummaryOut = Array.from(byEmail.values())
-      .sort((a, b) => b.sessionsCount - a.sessionsCount)
       .map((a) => ({
         email: a.email,
+        unitName: a.unitName || unitNameByEmail.get(a.email.toLowerCase()) || a.email,
         sessionsCount: a.sessionsCount,
         totalDurationMinutes: a.totalDurationMinutes,
         jingles: Array.from(a.jingles.values()).sort((x, y) => y.plays - x.plays),
-      }));
+      }))
+      .sort((a, b) => {
+        if (b.sessionsCount !== a.sessionsCount) return b.sessionsCount - a.sessionsCount;
+        return a.unitName.localeCompare(b.unitName);
+      });
 
     return {
       status: 200,

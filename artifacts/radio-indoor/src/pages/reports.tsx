@@ -1,7 +1,8 @@
 import { useState, useMemo } from "react";
 import {
   BarChart2, Users, ChevronDown, ChevronRight, Download, FileText,
-  Mail, RefreshCw, Clock, Radio, Check, Copy, Search, Calendar, FileSpreadsheet
+  Mail, RefreshCw, Clock, Radio, Check, Copy, Search, Calendar, FileSpreadsheet,
+  Building2, MapPin
 } from "lucide-react";
 import {
   useGetPlaybackReport, getGetPlaybackReportQueryKey,
@@ -22,6 +23,22 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+
+export function formatClientOptionLabel(c: any): string {
+  if (Array.isArray(c.units) && c.units.length > 1) {
+    const names = c.units.map((u: any) => u.name || u.email).filter(Boolean);
+    const namesStr = names.length > 0 ? `: ${names.slice(0, 3).join(", ")}${names.length > 3 ? "..." : ""}` : "";
+    return `${c.name} (${c.units.length} filiais${namesStr})`;
+  }
+  if (Array.isArray(c.units) && c.units.length === 1) {
+    const u = c.units[0];
+    return `${c.name} (${u.name || "Filial 1"} · ${u.email})`;
+  }
+  if (Array.isArray(c.authorizedEmails) && c.authorizedEmails.length > 1) {
+    return `${c.name} (${c.authorizedEmails.length} filiais cadastradas)`;
+  }
+  return `${c.name}${c.email ? ` (${c.email})` : ""}`;
+}
 
 type ReportMode = "media" | "sessions";
 type DatePreset = "30days" | "7days" | "today" | "thisMonth" | "allTime" | "custom";
@@ -237,7 +254,9 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
     if (!report?.emailSummary) return [];
     if (!searchTerm.trim()) return report.emailSummary;
     const term = searchTerm.toLowerCase();
-    return report.emailSummary.filter((e) => e.email.toLowerCase().includes(term));
+    return report.emailSummary.filter(
+      (e) => e.email.toLowerCase().includes(term) || ((e as any).unitName && (e as any).unitName.toLowerCase().includes(term))
+    );
   }, [report?.emailSummary, searchTerm]);
 
   const filteredSessions = useMemo(() => {
@@ -245,7 +264,9 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
     if (!searchTerm.trim()) return report.sessions;
     const term = searchTerm.toLowerCase();
     return report.sessions.filter(
-      (s) => s.email.toLowerCase().includes(term) || (s.deviceUuid && s.deviceUuid.toLowerCase().includes(term))
+      (s) => s.email.toLowerCase().includes(term) ||
+             ((s as any).unitName && (s as any).unitName.toLowerCase().includes(term)) ||
+             (s.deviceUuid && s.deviceUuid.toLowerCase().includes(term))
     );
   }, [report?.sessions, searchTerm]);
 
@@ -319,7 +340,7 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
 
       // Table 1: Email summary
       const summaryRows = (report.emailSummary || []).map((e) => [
-        e.email,
+        (e as any).unitName ? `${(e as any).unitName} (${e.email})` : e.email,
         String(e.sessionsCount),
         `${(e.totalDurationMinutes || 0).toFixed(1)} min`,
         String(Array.isArray(e.jingles) ? e.jingles.reduce((x, j) => x + (j.plays || 0), 0) : 0),
@@ -327,7 +348,7 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
 
       autoTable(doc, {
         startY: 76,
-        head: [["Filial (Email)", "Sessões", "Tempo no Ar (min)", "Locuções (Total)"]],
+        head: [["Filial / Unidade (Email)", "Sessões", "Tempo no Ar", "Locuções"]],
         body: summaryRows,
         theme: "striped",
         headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8.5 },
@@ -345,15 +366,16 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
       const jingleRows: string[][] = [];
       for (const e of report.emailSummary || []) {
         if (Array.isArray(e.jingles)) {
+          const branchLabel = (e as any).unitName ? `${(e as any).unitName} (${e.email})` : e.email;
           for (const j of e.jingles) {
-            jingleRows.push([e.email, j.title, `${j.plays}x`]);
+            jingleRows.push([branchLabel, j.title, `${j.plays}x`]);
           }
         }
       }
 
       autoTable(doc, {
         startY: finalY1 + 13,
-        head: [["Filial (Email)", "Título da Locução / Spot", "Execuções"]],
+        head: [["Filial / Unidade", "Título da Locução / Spot", "Execuções"]],
         body: jingleRows.length > 0 ? jingleRows : [["Todas", "Nenhuma locução no período", "0x"]],
         theme: "striped",
         headStyles: { fillColor: [79, 70, 229], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8 },
@@ -369,7 +391,7 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
       doc.text("Histórico Cronológico de Sessões do Player", 14, finalY2 + 10);
 
       const sessionRows = (report.sessions || []).slice(0, 100).map((s) => [
-        s.email,
+        (s as any).unitName ? `${(s as any).unitName} (${s.email})` : s.email,
         format(new Date(s.startedAt), "dd/MM/yy HH:mm", { locale: ptBR }),
         format(new Date(s.endedAt), "dd/MM/yy HH:mm", { locale: ptBR }),
         `${s.durationMinutes.toFixed(1)}m`,
@@ -380,7 +402,7 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
 
       autoTable(doc, {
         startY: finalY2 + 13,
-        head: [["Email", "Início", "Fim", "Duração", "Locuções", "Músicas", "Terminal"]],
+        head: [["Filial / Terminal", "Início", "Fim", "Duração", "Locuções", "Músicas", "Terminal"]],
         body: sessionRows,
         theme: "striped",
         headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.5 },
@@ -410,9 +432,10 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
   const handleExportCsv = () => {
     if (!report || !selectedClient) return;
 
-    let csv = "Email Filial;Data Inicio;Data Fim;Duracao Minutos;Locucoes;Musicas;Dispositivo\n";
+    let csv = "Filial / Unidade;Email;Data Inicio;Data Fim;Duracao Minutos;Locucoes;Musicas;Dispositivo\n";
     for (const s of report.sessions || []) {
-      csv += `"${s.email}";"${s.startedAt}";"${s.endedAt}";"${s.durationMinutes.toFixed(1)}";"${s.jinglePlays}";"${s.musicPlays}";"${s.deviceUuid}"\n`;
+      const uName = (s as any).unitName || s.email;
+      csv += `"${uName}";"${s.email}";"${s.startedAt}";"${s.endedAt}";"${s.durationMinutes.toFixed(1)}";"${s.jinglePlays}";"${s.musicPlays}";"${s.deviceUuid}"\n`;
     }
 
     const cleanName = selectedClient.name.replace(/[^a-zA-Z0-9]/g, "_");
@@ -553,7 +576,7 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
               <SelectContent>
                 {Array.isArray(clients) && clients.map((c) => (
                   <SelectItem key={c.id} value={String(c.id)}>
-                    {c.name} {c.email ? `(${c.email})` : ""}
+                    {formatClientOptionLabel(c)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -601,10 +624,17 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
             <div className="bg-card border border-card-border rounded-xl px-5 py-4 flex items-center gap-3 shadow-xs">
               <Users className="w-6 h-6 text-primary flex-none" />
               <div>
-                <p className="text-2xl font-bold text-foreground tabular-nums" data-testid="text-emails-count">
-                  {Array.isArray(report.emailSummary) ? report.emailSummary.length : 0}
-                </p>
-                <p className="text-xs text-muted-foreground">Filiais (emails) ativas</p>
+                <div className="flex items-baseline gap-1.5">
+                  <p className="text-2xl font-bold text-foreground tabular-nums" data-testid="text-emails-count">
+                    {Array.isArray(report.emailSummary) ? report.emailSummary.filter((e) => (e.sessionsCount || 0) > 0).length : 0}
+                  </p>
+                  {Array.isArray(report.emailSummary) && report.emailSummary.length > (report.emailSummary.filter((e) => (e.sessionsCount || 0) > 0).length) && (
+                    <span className="text-xs text-muted-foreground font-medium">
+                      / {report.emailSummary.length} cadastradas
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground">Filiais ativas no período</p>
               </div>
             </div>
 
@@ -674,7 +704,7 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
                   <tr className="border-b border-card-border bg-muted/20">
                     <th className="w-8" />
                     <th className="text-left px-5 py-2.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Email da filial
+                      Filial / Unidade & E-mail
                     </th>
                     <th className="text-right px-5 py-2.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
                       Sessões
@@ -712,8 +742,30 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
                               <ChevronRight className="w-4 h-4 text-muted-foreground" />
                             )}
                           </td>
-                          <td className="px-5 py-3 font-medium text-foreground font-mono text-xs">{e.email}</td>
-                          <td className="px-5 py-3 text-right tabular-nums">{e.sessionsCount}</td>
+                          <td className="px-5 py-3">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-7 h-7 rounded-lg bg-primary/10 text-primary flex items-center justify-center flex-none">
+                                <Building2 className="w-3.5 h-3.5" />
+                              </div>
+                              <div className="min-w-0">
+                                <span className="font-semibold text-foreground text-xs block truncate">
+                                  {(e as any).unitName || e.email}
+                                </span>
+                                <span className="text-[11px] text-muted-foreground font-mono block">
+                                  {e.email}
+                                </span>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-5 py-3 text-right tabular-nums">
+                            {e.sessionsCount > 0 ? (
+                              <span className="font-medium text-foreground">{e.sessionsCount}</span>
+                            ) : (
+                              <span className="text-[11px] px-2 py-0.5 rounded bg-muted text-muted-foreground font-medium">
+                                0
+                              </span>
+                            )}
+                          </td>
                           <td className="px-5 py-3 text-right tabular-nums text-muted-foreground">
                             {(e.totalDurationMinutes || 0).toFixed(1)}
                           </td>
@@ -779,7 +831,7 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
                 <thead>
                   <tr className="border-b border-card-border bg-muted/20">
                     <th className="text-left px-5 py-2.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Email
+                      Filial / Terminal
                     </th>
                     <th className="text-left px-5 py-2.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
                       Início
@@ -811,7 +863,14 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
                   )}
                   {filteredSessions.map((s, idx) => (
                     <tr key={idx} data-testid={`row-session-${idx}`} className="hover:bg-muted/20 transition-colors">
-                      <td className="px-5 py-2.5 font-mono text-xs text-foreground">{s.email}</td>
+                      <td className="px-5 py-2.5">
+                        <span className="font-semibold text-foreground text-xs block truncate">
+                          {(s as any).unitName || s.email}
+                        </span>
+                        <span className="text-[11px] text-muted-foreground font-mono block">
+                          {s.email}
+                        </span>
+                      </td>
                       <td className="px-5 py-2.5 text-muted-foreground text-xs">
                         {format(new Date(s.startedAt), "dd/MM HH:mm:ss", { locale: ptBR })}
                       </td>
@@ -1146,7 +1205,7 @@ function MediaReport({ clients, startDate, endDate, setStartDate, setEndDate }: 
               <SelectContent>
                 {Array.isArray(clients) && clients.map((c) => (
                   <SelectItem key={c.id} value={c.email}>
-                    {c.name}
+                    {formatClientOptionLabel(c)}
                   </SelectItem>
                 ))}
               </SelectContent>
