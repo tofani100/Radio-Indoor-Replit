@@ -130,14 +130,22 @@ export default function DashboardPage() {
                 <Clock className="w-3.5 h-3.5 text-muted-foreground/50 flex-none" />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm text-foreground truncate">
-                    <span className="font-medium">{a.mediaTitle}</span>
-                    <span className="text-muted-foreground"> · {a.clientEmail}</span>
+                    <span className="font-medium">{a.mediaTitle || "Mídia"}</span>
+                    <span className="text-muted-foreground"> · {a.clientEmail || "Cliente"}</span>
                   </p>
-                  <p className="text-xs text-muted-foreground truncate font-mono">{a.deviceUuid.substring(0, 12)}...</p>
+                  <p className="text-xs text-muted-foreground truncate font-mono">
+                    {a.deviceUuid ? `${a.deviceUuid.substring(0, 12)}...` : "terminal-web"}
+                  </p>
                 </div>
                 <div className="text-right">
-                  <span className={`text-xs px-1.5 py-0.5 rounded ${a.mediaType === "music" ? "bg-blue-500/10 text-blue-600" : "bg-purple-500/10 text-purple-600"}`}>{a.mediaType}</span>
-                  <p className="text-xs text-muted-foreground mt-0.5">{formatDistanceToNow(new Date(a.playedAt), { addSuffix: true, locale: ptBR })}</p>
+                  <span className={`text-xs px-1.5 py-0.5 rounded ${a.mediaType === "music" ? "bg-blue-500/10 text-blue-600" : "bg-purple-500/10 text-purple-600"}`}>
+                    {a.mediaType || "music"}
+                  </span>
+                  {a.playedAt && (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {formatDistanceToNow(new Date(a.playedAt), { addSuffix: true, locale: ptBR })}
+                    </p>
+                  )}
                 </div>
               </div>
             ))

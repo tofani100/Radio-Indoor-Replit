@@ -1997,9 +1997,11 @@ export async function handleStandaloneRequest(
         const c = clientMap.get(l.clientId);
         return {
           id: l.id,
-          mediaTitle: m?.title || "Mídia",
-          clientName: c?.name || "Cliente",
-          playedAt: l.playedAt,
+          mediaTitle: m?.title || l.mediaTitle || "Mídia",
+          mediaType: (l.mediaType || m?.type || "music") as "music" | "jingle" | "voiceover",
+          clientEmail: l.clientEmail || c?.contactEmail || c?.name || "cliente@radio.com",
+          deviceUuid: l.deviceUuid || "terminal-web",
+          playedAt: l.playedAt || new Date().toISOString(),
         };
       });
     return { status: 200, data: recent };

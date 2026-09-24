@@ -987,7 +987,7 @@ export default function PlayerPage() {
               {register.isPending ? "Verificando..." : "Acessar"}
             </button>
           </form>
-          <p className="mt-6 text-xs text-sidebar-foreground/20 font-mono">{uuid.substring(0, 16)}...</p>
+          <p className="mt-6 text-xs text-sidebar-foreground/20 font-mono">{(uuid || "").substring(0, 16)}...</p>
         </div>
       </div>
     );

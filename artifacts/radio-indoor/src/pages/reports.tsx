@@ -375,7 +375,7 @@ function SessionsReport({ clients, startDate, endDate, setStartDate, setEndDate 
         `${s.durationMinutes.toFixed(1)}m`,
         String(s.jinglePlays),
         String(s.musicPlays),
-        s.deviceUuid.substring(0, 10),
+        (s.deviceUuid || "").substring(0, 10),
       ]);
 
       autoTable(doc, {
