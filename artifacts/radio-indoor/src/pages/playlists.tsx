@@ -52,17 +52,27 @@ export default function PlaylistsPage() {
     query: { queryKey: getListPlaylistsQueryKey(params), enabled: !!clientFilter },
   });
 
-  const inv = () => qc.invalidateQueries({ queryKey: getListPlaylistsQueryKey() });
+  const inv = () => {
+    qc.invalidateQueries({ queryKey: getListPlaylistsQueryKey() });
+    qc.invalidateQueries({ queryKey: ["/api/playlists"] });
+    if (clientFilter) {
+      qc.invalidateQueries({ queryKey: getListPlaylistsQueryKey({ clientId: parseInt(clientFilter) }) });
+    }
+  };
 
   const create = useCreatePlaylist({
     mutation: {
       onSuccess: () => {
         toast({ title: "Playlist de comerciais criada com sucesso" });
+        const targetClientId = form.clientId || clientFilter;
+        if (targetClientId && targetClientId !== clientFilter) {
+          setClientFilter(targetClientId);
+        }
         inv();
         setCreateOpen(false);
         setForm({
           name: "",
-          clientId: clientFilter || "",
+          clientId: targetClientId || "",
           playbackMode: "sequential",
           targetAllUnits: true,
           selectedUnitEmails: [],

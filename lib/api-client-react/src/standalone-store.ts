@@ -63,6 +63,7 @@ export interface DBPlaylist {
   createdAt: string;
   isGlobal?: boolean;
   allowedPlans?: string[];
+  allowedClientIds?: number[];
   unitEmails?: string[];
   coverUrl?: string;
   genre?: string;
@@ -118,86 +119,162 @@ export interface DBPlaybackLog {
 }
 
 let dbInstance: IDBDatabase | null = null;
+let dbOpenPromise: Promise<IDBDatabase | null> | null = null;
 
-export function openDB(): Promise<IDBDatabase> {
+export function openDB(): Promise<IDBDatabase | null> {
   if (dbInstance) return Promise.resolve(dbInstance);
+  if (dbOpenPromise) return dbOpenPromise;
 
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+  if (typeof window === "undefined" || typeof indexedDB === "undefined") {
+    return Promise.resolve(null);
+  }
 
-    req.onupgradeneeded = (event) => {
-      const db = req.result;
-      const tx = req.transaction;
-
-      if (!db.objectStoreNames.contains("admins")) {
-        const store = db.createObjectStore("admins", { keyPath: "id", autoIncrement: true });
-        store.createIndex("email", "email", { unique: false });
-      }
-      if (!db.objectStoreNames.contains("clients")) {
-        const store = db.createObjectStore("clients", { keyPath: "id", autoIncrement: true });
-        store.createIndex("email", "email", { unique: false });
-      }
-      if (!db.objectStoreNames.contains("playlists")) {
-        const store = db.createObjectStore("playlists", { keyPath: "id", autoIncrement: true });
-        store.createIndex("clientId", "clientId", { unique: false });
-      }
-      if (!db.objectStoreNames.contains("playlistItems")) {
-        const store = db.createObjectStore("playlistItems", { keyPath: "id", autoIncrement: true });
-        store.createIndex("playlistId", "playlistId", { unique: false });
-      }
-      if (!db.objectStoreNames.contains("media")) {
-        const store = db.createObjectStore("media", { keyPath: "id", autoIncrement: true });
-        store.createIndex("clientId", "clientId", { unique: false });
-      }
-      if (!db.objectStoreNames.contains("devices")) {
-        const store = db.createObjectStore("devices", { keyPath: "id", autoIncrement: true });
-        store.createIndex("clientId", "clientId", { unique: false });
-        store.createIndex("pairingCode", "pairingCode", { unique: false });
-      } else if (tx) {
-        // Upgrade existing devices store to remove unique index on pairingCode
-        try {
-          const store = tx.objectStore("devices");
-          if (store.indexNames.contains("pairingCode")) {
-            store.deleteIndex("pairingCode");
-            store.createIndex("pairingCode", "pairingCode", { unique: false });
-          }
-        } catch {}
-      }
-      if (!db.objectStoreNames.contains("playbackLogs")) {
-        const store = db.createObjectStore("playbackLogs", { keyPath: "id", autoIncrement: true });
-        store.createIndex("clientId", "clientId", { unique: false });
+  dbOpenPromise = new Promise<IDBDatabase | null>((resolve) => {
+    let settled = false;
+    const finish = (result: IDBDatabase | null) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
       }
     };
 
-    req.onsuccess = async () => {
-      dbInstance = req.result;
-      resolve(dbInstance);
-    };
+    const timer = setTimeout(() => {
+      console.warn("[openDB] IndexedDB open timed out after 2000ms");
+      finish(null);
+    }, 2000);
 
-    req.onerror = () => reject(req.error);
+    try {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+
+      req.onblocked = () => {
+        console.warn("[openDB] IndexedDB blocked by another open connection");
+      };
+
+      req.onupgradeneeded = (event) => {
+        const db = req.result;
+        const tx = req.transaction;
+
+        if (!db.objectStoreNames.contains("admins")) {
+          const store = db.createObjectStore("admins", { keyPath: "id", autoIncrement: true });
+          store.createIndex("email", "email", { unique: false });
+        }
+        if (!db.objectStoreNames.contains("clients")) {
+          const store = db.createObjectStore("clients", { keyPath: "id", autoIncrement: true });
+          store.createIndex("email", "email", { unique: false });
+        }
+        if (!db.objectStoreNames.contains("playlists")) {
+          const store = db.createObjectStore("playlists", { keyPath: "id", autoIncrement: true });
+          store.createIndex("clientId", "clientId", { unique: false });
+        }
+        if (!db.objectStoreNames.contains("playlistItems")) {
+          const store = db.createObjectStore("playlistItems", { keyPath: "id", autoIncrement: true });
+          store.createIndex("playlistId", "playlistId", { unique: false });
+        }
+        if (!db.objectStoreNames.contains("media")) {
+          const store = db.createObjectStore("media", { keyPath: "id", autoIncrement: true });
+          store.createIndex("clientId", "clientId", { unique: false });
+        }
+        if (!db.objectStoreNames.contains("devices")) {
+          const store = db.createObjectStore("devices", { keyPath: "id", autoIncrement: true });
+          store.createIndex("clientId", "clientId", { unique: false });
+          store.createIndex("pairingCode", "pairingCode", { unique: false });
+        } else if (tx) {
+          try {
+            const store = tx.objectStore("devices");
+            if (store.indexNames.contains("pairingCode")) {
+              store.deleteIndex("pairingCode");
+              store.createIndex("pairingCode", "pairingCode", { unique: false });
+            }
+          } catch {}
+        }
+        if (!db.objectStoreNames.contains("playbackLogs")) {
+          const store = db.createObjectStore("playbackLogs", { keyPath: "id", autoIncrement: true });
+          store.createIndex("clientId", "clientId", { unique: false });
+        }
+      };
+
+      req.onsuccess = () => {
+        dbInstance = req.result;
+        finish(dbInstance);
+      };
+
+      req.onerror = () => {
+        console.warn("[openDB] IndexedDB error:", req.error);
+        finish(null);
+      };
+    } catch (err) {
+      console.warn("[openDB] IndexedDB exception:", err);
+      finish(null);
+    }
   });
+
+  return dbOpenPromise;
 }
 
 // ── Local IndexedDB operations (Cache layer) ──
 function getLocalAll<T>(storeName: string): Promise<T[]> {
-  return openDB().then((db) => {
-    return new Promise<T[]>((resolve) => {
+  return new Promise<T[]>((resolve) => {
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        resolve([]);
+      }
+    }, 1000);
+
+    openDB().then((db) => {
+      if (!db) {
+        if (!resolved) { resolved = true; clearTimeout(timer); resolve([]); }
+        return;
+      }
       try {
         const tx = db.transaction(storeName, "readonly");
         const store = tx.objectStore(storeName);
         const req = store.getAll();
-        req.onsuccess = () => resolve((req.result as T[]) || []);
-        req.onerror = () => resolve([]);
+        req.onsuccess = () => {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timer);
+            resolve((req.result as T[]) || []);
+          }
+        };
+        req.onerror = () => {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timer);
+            resolve([]);
+          }
+        };
       } catch {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve([]);
+        }
+      }
+    }).catch(() => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
         resolve([]);
       }
     });
-  }).catch(() => []);
+  });
 }
 
 function putLocal<T>(storeName: string, item: T): Promise<void> {
-  return openDB().then((db) => {
-    return new Promise<void>((resolve) => {
+  return new Promise<void>((resolve) => {
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (!resolved) { resolved = true; resolve(); }
+    }, 1000);
+
+    openDB().then((db) => {
+      if (!db) {
+        if (!resolved) { resolved = true; clearTimeout(timer); resolve(); }
+        return;
+      }
       try {
         const tx = db.transaction(storeName, "readwrite");
         const store = tx.objectStore(storeName);
@@ -210,40 +287,83 @@ function putLocal<T>(storeName: string, item: T): Promise<void> {
             }
             try {
               const putReq = store.put(item);
-              putReq.onsuccess = () => resolve();
-              putReq.onerror = () => resolve();
+              putReq.onsuccess = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
+              putReq.onerror = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
             } catch {
-              resolve();
+              if (!resolved) { resolved = true; clearTimeout(timer); resolve(); }
             }
           };
           getReq.onerror = () => {
             try {
               const putReq = store.put(item);
-              putReq.onsuccess = () => resolve();
-              putReq.onerror = () => resolve();
+              putReq.onsuccess = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
+              putReq.onerror = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
             } catch {
-              resolve();
+              if (!resolved) { resolved = true; clearTimeout(timer); resolve(); }
             }
           };
         } else {
           const req = store.put(item);
-          req.onsuccess = () => resolve();
-          req.onerror = (err) => {
-            console.warn(`[putLocal] Error storing in ${storeName}:`, err);
-            resolve(); // Do not throw and break the caller!
-          };
+          req.onsuccess = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
+          req.onerror = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
         }
-      } catch (err) {
-        console.warn(`[putLocal] Exception in ${storeName}:`, err);
-        resolve();
+        tx.onabort = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
+        tx.oncomplete = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
+        tx.onerror = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
+      } catch {
+        if (!resolved) { resolved = true; clearTimeout(timer); resolve(); }
       }
+    }).catch(() => {
+      if (!resolved) { resolved = true; clearTimeout(timer); resolve(); }
     });
-  }).catch(() => {});
+  });
+}
+
+function putLocalBatch<T extends { id: number }>(storeName: string, items: T[]): Promise<void> {
+  if (!items || items.length === 0) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (!resolved) { resolved = true; resolve(); }
+    }, 1500);
+
+    openDB().then((db) => {
+      if (!db) {
+        if (!resolved) { resolved = true; clearTimeout(timer); resolve(); }
+        return;
+      }
+      try {
+        const tx = db.transaction(storeName, "readwrite");
+        const store = tx.objectStore(storeName);
+        for (const item of items) {
+          try {
+            store.put(item);
+          } catch {}
+        }
+        tx.oncomplete = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
+        tx.onerror = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
+        tx.onabort = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
+      } catch (err) {
+        if (!resolved) { resolved = true; clearTimeout(timer); resolve(); }
+      }
+    }).catch(() => {
+      if (!resolved) { resolved = true; clearTimeout(timer); resolve(); }
+    });
+  });
 }
 
 function deleteLocal(storeName: string, id: number | string): Promise<void> {
-  return openDB().then((db) => {
-    return new Promise<void>((resolve) => {
+  return new Promise<void>((resolve) => {
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (!resolved) { resolved = true; resolve(); }
+    }, 1000);
+
+    openDB().then((db) => {
+      if (!db) {
+        if (!resolved) { resolved = true; clearTimeout(timer); resolve(); }
+        return;
+      }
       try {
         const tx = db.transaction(storeName, "readwrite");
         const store = tx.objectStore(storeName);
@@ -252,28 +372,68 @@ function deleteLocal(storeName: string, id: number | string): Promise<void> {
           store.delete(numId);
         }
         store.delete(String(id));
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => resolve();
-      } catch (err) {
-        console.warn(`[deleteLocal] error in ${storeName}:`, err);
-        resolve();
+        tx.oncomplete = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
+        tx.onerror = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
+        tx.onabort = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(); } };
+      } catch {
+        if (!resolved) { resolved = true; clearTimeout(timer); resolve(); }
       }
+    }).catch(() => {
+      if (!resolved) { resolved = true; clearTimeout(timer); resolve(); }
     });
-  }).catch(() => {});
+  });
+}
+
+// ── In-Memory Store & Media Blob Caches ──
+export const inMemoryMediaBlobs = new Map<number, Blob>();
+export const mediaBlobUrlCache = new Map<number, string>();
+const memoryStoreCache = new Map<string, { data: any[]; timestamp: number }>();
+const CACHE_TTL_MS = 20000; // 20s in-memory freshness
+
+export function invalidateStoreCache(storeName?: string) {
+  if (storeName) {
+    memoryStoreCache.delete(storeName);
+  } else {
+    memoryStoreCache.clear();
+  }
+}
+
+// ── Clean undefined values before sending to Firestore ──
+export function cleanFirestoreData<T extends Record<string, any>>(data: T): Record<string, any> {
+  const clean: Record<string, any> = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (v === undefined) continue;
+    if (v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date) && !(v instanceof Blob)) {
+      clean[k] = cleanFirestoreData(v);
+    } else if (Array.isArray(v)) {
+      clean[k] = v
+        .filter((item) => item !== undefined)
+        .map((item) => (item !== null && typeof item === "object" && !(item instanceof Date) && !(item instanceof Blob) ? cleanFirestoreData(item) : item));
+    } else {
+      clean[k] = v;
+    }
+  }
+  return clean;
 }
 
 // ── Cloud Firestore + Cache Sync ──
-export async function getAll<T extends { id: number }>(storeName: string): Promise<T[]> {
+export async function getAll<T extends { id: number }>(storeName: string, skipMemoryCache = false): Promise<T[]> {
+  const now = Date.now();
+  if (!skipMemoryCache) {
+    const cached = memoryStoreCache.get(storeName);
+    if (cached && cached.data && cached.data.length > 0 && now - cached.timestamp < CACHE_TTL_MS) {
+      return cached.data as T[];
+    }
+  }
+
   try {
-    const local = await getLocalAll<T>(storeName);
     const colRef = collection(firestore, storeName);
     const snap = await getDocs(colRef);
     if (!snap.empty) {
-      const localBlobMap = new Map((local as any[]).map((m: any) => [m.id, m.blob]));
-      const items = snap.docs.map((d) => {
+      let items = snap.docs.map((d) => {
         const id = Number(d.id) || (d.data() as any).id;
         const data = d.data() as T;
-        const existingBlob = localBlobMap.get(id);
+        const existingBlob = inMemoryMediaBlobs.get(id);
         return {
           ...data,
           id,
@@ -281,46 +441,133 @@ export async function getAll<T extends { id: number }>(storeName: string): Promi
         };
       });
 
-      // Synchronize local cache with Firestore: delete any items locally that were deleted in Firestore
-      const firestoreIds = new Set(items.map((it) => it.id));
-      for (const loc of local) {
-        if (!firestoreIds.has(loc.id)) {
-          await deleteLocal(storeName, loc.id);
+      // Self-healing deduplication for playlistItems: if same (playlistId, mediaId) appears multiple times,
+      // keep only the first and remove duplicates from Firestore and IndexedDB
+      if (storeName === "playlistItems") {
+        const seenPairs = new Set<string>();
+        const uniqueItems: typeof items = [];
+        const duplicateIds: number[] = [];
+        for (const it of items as any[]) {
+          const key = `${it.playlistId}_${it.mediaId}`;
+          if (seenPairs.has(key)) {
+            duplicateIds.push(it.id);
+          } else {
+            seenPairs.add(key);
+            uniqueItems.push(it);
+          }
+        }
+        if (duplicateIds.length > 0) {
+          items = uniqueItems;
+          setTimeout(() => {
+            for (const dupId of duplicateIds) {
+              deleteDoc(doc(firestore, "playlistItems", String(dupId))).catch(() => {});
+              deleteLocal("playlistItems", dupId).catch(() => {});
+            }
+          }, 100);
         }
       }
 
-      for (const it of items) {
-        await putLocal(storeName, it);
+      // Self-healing deduplication for devices: if same email appears multiple times,
+      // keep only the active/most recent session and purge duplicate/stale records from Firestore and IndexedDB
+      if (storeName === "devices") {
+        const devicesByEmail = new Map<string, any[]>();
+        const nonEmailDevs: typeof items = [];
+        for (const it of items as any[]) {
+          const em = (it.email || "").trim().toLowerCase();
+          if (!em) {
+            nonEmailDevs.push(it);
+          } else {
+            const list = devicesByEmail.get(em) || [];
+            list.push(it);
+            devicesByEmail.set(em, list);
+          }
+        }
+
+        const uniqueItems: typeof items = [...nonEmailDevs];
+        const duplicateIds: number[] = [];
+        const nowMs = Date.now();
+        const ACTIVE_THRESHOLD = 5 * 60 * 1000;
+
+        for (const [, list] of devicesByEmail.entries()) {
+          if (list.length === 1) {
+            uniqueItems.push(list[0]);
+          } else {
+            // Sort: online/active first, newest lastSeen first
+            list.sort((a, b) => {
+              const aOnline = a.status === "active" && a.lastSeen && (nowMs - new Date(a.lastSeen).getTime() < ACTIVE_THRESHOLD);
+              const bOnline = b.status === "active" && b.lastSeen && (nowMs - new Date(b.lastSeen).getTime() < ACTIVE_THRESHOLD);
+              if (aOnline && !bOnline) return -1;
+              if (!aOnline && bOnline) return 1;
+              const aTime = a.lastSeen ? new Date(a.lastSeen).getTime() : 0;
+              const bTime = b.lastSeen ? new Date(b.lastSeen).getTime() : 0;
+              return bTime - aTime;
+            });
+            const winner = list[0];
+            uniqueItems.push(winner);
+            for (let i = 1; i < list.length; i++) {
+              duplicateIds.push(list[i].id);
+            }
+          }
+        }
+
+        if (duplicateIds.length > 0) {
+          items = uniqueItems;
+          setTimeout(() => {
+            for (const dupId of duplicateIds) {
+              deleteDoc(doc(firestore, "devices", String(dupId))).catch(() => {});
+              deleteLocal("devices", dupId).catch(() => {});
+            }
+          }, 100);
+        }
       }
+
+      // Save to IndexedDB asynchronously in background (never blocks network/UI response)
+      putLocalBatch(storeName, items).catch(() => {});
+
+      // For media, sync local blobs to inMemoryMediaBlobs in background
+      if (storeName === "media") {
+        getLocalAll<any>("media").then((localMedia) => {
+          for (const loc of localMedia) {
+            if (loc.blob && !inMemoryMediaBlobs.has(loc.id)) {
+              inMemoryMediaBlobs.set(loc.id, loc.blob);
+            }
+          }
+        }).catch(() => {});
+      }
+
+      memoryStoreCache.set(storeName, { data: items, timestamp: now });
       return items;
     } else {
-      // Cloud is empty for this collection
-      // ONLY sync up to Cloud if it's initial seeding for admins or clients, never restore deleted playlistItems!
-      if (storeName === "admins" || storeName === "clients") {
-        if (local.length > 0) {
+      // Cloud is empty for this collection — fallback to local cache (never re-seed ephemeral devices)
+      const local = await getLocalAll<T>(storeName);
+      if (local.length > 0 && storeName !== "devices") {
+        setTimeout(() => {
           for (const item of local) {
             try {
               const dRef = doc(firestore, storeName, String(item.id));
               const { blob, ...data } = item as any;
-              await setDoc(dRef, data);
-            } catch (syncErr) {
-              console.warn(`[Firestore] sync up ${storeName} item failed:`, syncErr);
-            }
+              setDoc(dRef, cleanFirestoreData(data)).catch(() => {});
+            } catch {}
           }
-          return local;
-        }
-      } else {
-        // If Cloud has 0 items for this collection, clear any stale local items as well!
-        for (const loc of local) {
-          await deleteLocal(storeName, loc.id);
-        }
-        return [];
+        }, 100);
+        memoryStoreCache.set(storeName, { data: local, timestamp: now });
+        return local;
       }
+      return [];
     }
   } catch (err) {
     console.warn(`[Firestore] getAll(${storeName}) failed, using local cache:`, err);
+    const fallback = await getLocalAll<T>(storeName);
+    if (fallback.length > 0) {
+      memoryStoreCache.set(storeName, { data: fallback, timestamp: now });
+      return fallback;
+    }
+    const staleCache = memoryStoreCache.get(storeName);
+    if (staleCache && staleCache.data && staleCache.data.length > 0) {
+      return staleCache.data as T[];
+    }
+    return [];
   }
-  return getLocalAll<T>(storeName);
 }
 
 export async function getById<T extends { id: number }>(storeName: string, id: number): Promise<T | undefined> {
@@ -351,28 +598,33 @@ export async function insert<T extends Record<string, any>>(storeName: string, i
 
   try {
     const dRef = doc(firestore, storeName, String(nextId));
-    const { blob, ...firestoreData } = fullItem as any;
+    const { blob, ...rawFirestoreData } = fullItem as any;
+    const firestoreData = cleanFirestoreData(rawFirestoreData);
     await setDoc(dRef, firestoreData);
   } catch (err) {
     console.warn(`[Firestore] insert(${storeName}) failed:`, err);
   }
 
   await putLocal(storeName, fullItem);
+  invalidateStoreCache(storeName);
   return nextId;
 }
 
 export async function update<T extends { id: number }>(storeName: string, item: T): Promise<void> {
   try {
     const dRef = doc(firestore, storeName, String(item.id));
-    const { blob, ...firestoreData } = item as any;
+    const { blob, ...rawFirestoreData } = item as any;
+    const firestoreData = cleanFirestoreData(rawFirestoreData);
     await setDoc(dRef, firestoreData, { merge: true });
   } catch (err) {
     console.warn(`[Firestore] update(${storeName}) failed:`, err);
   }
   await putLocal(storeName, item);
+  invalidateStoreCache(storeName);
 }
 
 export async function remove(storeName: string, id: number): Promise<void> {
+  invalidateStoreCache(storeName);
   try {
     const dRef = doc(firestore, storeName, String(id));
     await deleteDoc(dRef);
@@ -443,8 +695,6 @@ export function setSessionUser(user: { id: number; email: string; name: string; 
   }
 }
 
-const inMemoryMediaBlobs = new Map<number, Blob>();
-const mediaBlobUrlCache = new Map<number, string>();
 const CHUNK_SIZE = 650 * 1024; // 650 KB chunk size (under Firestore 1MB doc limit)
 
 function blobToBase64(blob: Blob): Promise<string> {
@@ -834,6 +1084,8 @@ export async function handleStandaloneRequest(
         const nowIso = new Date().toISOString();
         const nowMs = Date.now();
 
+        const forceTakeover = !!(body?.forceTakeover);
+
         // Check if there is another ACTIVE station/browser session for this non-master email
         if (!isMasterEmail) {
           const ACTIVE_SESSION_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes window matching production isOnline()
@@ -845,7 +1097,7 @@ export async function handleStandaloneRequest(
             return nowMs - lastSeenMs < ACTIVE_SESSION_THRESHOLD_MS;
           });
 
-          if (conflictingDev) {
+          if (conflictingDev && !forceTakeover) {
             console.warn(`[REGISTER] ⛔ Conflito de sessão para email ${email}. Já logado em uuid ${conflictingDev.uuid}`);
             return {
               status: 200,
@@ -856,6 +1108,12 @@ export async function handleStandaloneRequest(
                 message: `Este e-mail (${email}) já está logado em outra estação e não pode ser duplicado! Peça autorização ao administrador do sistema!`,
               },
             };
+          }
+
+          if (conflictingDev && forceTakeover) {
+            console.warn(`[REGISTER] 🔄 Force takeover para email ${email}. Desconectando sessão anterior uuid ${conflictingDev.uuid}`);
+            conflictingDev.status = "duplicate";
+            await update("devices", conflictingDev);
           }
         }
 
@@ -880,6 +1138,14 @@ export async function handleStandaloneRequest(
             createdAt: nowIso,
           };
           devId = await insert("devices", newDev);
+        }
+
+        // Auto-purge any other duplicate or stale device rows for this email
+        const otherDevsForEmail = allDevs.filter((d) => d.email && d.email.toLowerCase() === email && (!uuid || d.uuid !== uuid));
+        for (const od of otherDevsForEmail) {
+          if (forceTakeover || od.status !== "active" || (nowMs - (od.lastSeen ? new Date(od.lastSeen).getTime() : 0) >= 5 * 60 * 1000)) {
+            await remove("devices", od.id).catch(() => {});
+          }
         }
       } catch (devErr) {
         console.warn("[REGISTER] Device record update error (non-fatal):", devErr);
@@ -910,6 +1176,59 @@ export async function handleStandaloneRequest(
     };
   }
 
+  // ── Devices Disconnect / Logout (Release session & remove device record) ──
+  if (
+    path === "/api/devices/disconnect" ||
+    path === "/api/devices/logout" ||
+    (path === "/api/devices" && method === "DELETE")
+  ) {
+    const email = (body?.email || query.get("email") || "").trim().toLowerCase();
+    const uuid = (body?.uuid || query.get("uuid") || "").trim();
+    console.warn(`[DISCONNECT] Removendo registro do dispositivo para email="${email}", uuid="${uuid}"`);
+
+    try {
+      // 1. Local IndexedDB devices
+      const allDevs = await getAll<DBDevice>("devices");
+      const toRemove = allDevs.filter((d) => {
+        if (uuid && d.uuid === uuid) return true;
+        if (email && d.email && d.email.trim().toLowerCase() === email) return true;
+        return false;
+      });
+
+      console.warn(`[DISCONNECT] Dispositivos locais encontrados para remoção: ${toRemove.length}`);
+      for (const dev of toRemove) {
+        await remove("devices", dev.id);
+      }
+
+      // 2. Direct Firestore cleanup to guarantee instant cloud removal across all clients
+      try {
+        const colRef = collection(firestore, "devices");
+        const snap = await getDocs(colRef);
+        for (const docSnap of snap.docs) {
+          const data = docSnap.data();
+          const docUuid = (data.uuid || "").trim();
+          const docEmail = (data.email || "").trim().toLowerCase();
+          if ((uuid && docUuid === uuid) || (email && docEmail === email)) {
+            await deleteDoc(docSnap.ref).catch(() => {});
+            const docNumId = Number(docSnap.id) || data.id;
+            if (docNumId) {
+              await deleteLocal("devices", docNumId).catch(() => {});
+            }
+          }
+        }
+      } catch (cloudErr) {
+        console.warn("[DISCONNECT] Cloud cleanup error (non-fatal):", cloudErr);
+      }
+    } catch (err) {
+      console.error("[DISCONNECT] Erro ao desconectar dispositivo:", err);
+    }
+
+    return {
+      status: 200,
+      data: { success: true, message: "Dispositivo desconectado e liberado com sucesso" },
+    };
+  }
+
   // ── Playback Queue Route for Player ──
   if (
     path === "/api/playback/queue" ||
@@ -919,6 +1238,10 @@ export async function handleStandaloneRequest(
   ) {
     const emailParam = (query.get("email") || "").trim().toLowerCase();
     const clientIdParam = query.get("clientId");
+    const playlistIdsParam = query.get("playlistIds");
+    const requestedPlaylistIds = playlistIdsParam
+      ? playlistIdsParam.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n > 0)
+      : (query.get("playlistId") && parseInt(query.get("playlistId")!) > 0 ? [parseInt(query.get("playlistId")!)] : []);
     const requestedPlaylistId = query.get("playlistId") ? parseInt(query.get("playlistId")!) : null;
 
     if (!emailParam && !clientIdParam) {
@@ -954,27 +1277,34 @@ export async function handleStandaloneRequest(
 
     const requestedCommercialPlaylistId = query.get("commercialPlaylistId") ? parseInt(query.get("commercialPlaylistId")!) : null;
 
-    // 1. Calculate accessible global playlists for this client's plan
+    // 1. Calculate accessible global playlists for this client's plan & client assignment
     const clientPlan = targetClient.plan || "standard";
     const allowedGlobalIds = Array.isArray(targetClient.allowedGlobalPlaylistIds) ? targetClient.allowedGlobalPlaylistIds : null;
-    let globalPool = allPlaylists.filter((p) => p.isGlobal === true && p.active !== false);
-    if (allowedGlobalIds && allowedGlobalIds.length > 0) {
-      globalPool = globalPool.filter((p) => allowedGlobalIds.includes(p.id));
-    } else {
-      globalPool = globalPool.filter((p) => {
-        if (!p.allowedPlans || p.allowedPlans.includes("all")) return true;
-        return p.allowedPlans.includes(clientPlan);
-      });
-      if (clientPlan === "standard") globalPool = globalPool.slice(0, 10);
-      else if (clientPlan === "master") globalPool = globalPool.slice(0, 30);
-    }
+    let globalPool = allPlaylists.filter((p) => {
+      if (p.isGlobal !== true || p.active === false) return false;
+      // If playlist has specific clients assigned:
+      if (Array.isArray(p.allowedClientIds) && p.allowedClientIds.length > 0) {
+        return p.allowedClientIds.includes(targetClientId);
+      }
+      // Otherwise fallback to client plan
+      if (allowedGlobalIds && allowedGlobalIds.length > 0) {
+        return allowedGlobalIds.includes(p.id);
+      }
+      if (!p.allowedPlans || p.allowedPlans.includes("all")) return true;
+      return p.allowedPlans.includes(clientPlan);
+    });
 
     // 2. Select active musical playlist
-    let isRandomPlanMix = requestedPlaylistId === 0;
+    let isRandomPlanMix = requestedPlaylistId === 0 || (requestedPlaylistIds.length === 0 && (!requestedPlaylistId || requestedPlaylistId === 0));
     let activePlaylist: DBPlaylist | undefined = undefined;
 
-    if (requestedPlaylistId && requestedPlaylistId > 0) {
-      activePlaylist = allPlaylists.find((p) => p.id === requestedPlaylistId && p.active !== false);
+    if (requestedPlaylistIds.length > 0) {
+      isRandomPlanMix = false;
+      activePlaylist = globalPool.find((p) => p.id === requestedPlaylistIds[0]) ||
+                       allPlaylists.find((p) => clientIds.includes(p.clientId) && p.id === requestedPlaylistIds[0] && p.active !== false);
+    } else if (requestedPlaylistId && requestedPlaylistId > 0) {
+      activePlaylist = globalPool.find((p) => p.id === requestedPlaylistId) ||
+                       allPlaylists.find((p) => clientIds.includes(p.clientId) && p.id === requestedPlaylistId && p.active !== false);
     }
 
     if (!activePlaylist && !isRandomPlanMix) {
@@ -1076,33 +1406,70 @@ export async function handleStandaloneRequest(
           musicItems.push(formatMediaItem(m, item.id));
         }
       }
-      // Shuffle tracks randomly
-      musicItems.sort(() => Math.random() - 0.5);
+      // Keep deterministic order across poll requests; client player handles shuffle if enabled
+    } else if (requestedPlaylistIds.length > 0) {
+      // Gather tracks from ALL selected playlists
+      const targetIds = new Set(requestedPlaylistIds);
+      const targetItems = allItems
+        .filter((i) => targetIds.has(i.playlistId) && i.active !== false)
+        .sort((a, b) => {
+          const aIdx = requestedPlaylistIds.indexOf(a.playlistId);
+          const bIdx = requestedPlaylistIds.indexOf(b.playlistId);
+          if (aIdx !== bIdx) return aIdx - bIdx;
+          return a.position - b.position;
+        });
+      const mediaMap = new Map(allMedia.map((m) => [m.id, m]));
+      const seenMedia = new Set<number>();
+      for (const item of targetItems) {
+        if (seenMedia.has(item.mediaId)) continue;
+        const m = mediaMap.get(item.mediaId);
+        if (m) {
+          seenMedia.add(m.id);
+          musicItems.push(formatMediaItem(m, item.id));
+        }
+      }
     } else if (activePlaylist) {
       const playlistItems = allItems
         .filter((i) => i.playlistId === activePlaylist!.id && i.active !== false)
         .sort((a, b) => a.position - b.position);
       const mediaMap = new Map(allMedia.map((m) => [m.id, m]));
-      musicItems = playlistItems
-        .map((item) => {
-          const m = mediaMap.get(item.mediaId);
-          return m ? formatMediaItem(m, item.id) : null;
-        })
-        .filter((it): it is NonNullable<typeof it> => it !== null);
+      const seenMedia = new Set<number>();
+      for (const item of playlistItems) {
+        if (seenMedia.has(item.mediaId)) continue;
+        seenMedia.add(item.mediaId);
+        const m = mediaMap.get(item.mediaId);
+        if (m) {
+          musicItems.push(formatMediaItem(m, item.id));
+        }
+      }
     }
 
+    // Deduplicate musicItems by track ID to ensure no track is ever doubled in the queue
+    const seenMusicIds = new Set<number>();
+    const uniqueMusicItems = musicItems.filter((item) => {
+      if (seenMusicIds.has(item.id)) return false;
+      seenMusicIds.add(item.id);
+      return true;
+    });
+
     const commercialItems = clientCommercials.map((m) => formatMediaItem(m, m.id));
-    const queueItems = [...musicItems, ...commercialItems];
+    const queueItems = [...uniqueMusicItems, ...commercialItems];
+
+    const displayPlaylistName = isRandomPlanMix
+      ? "🔀 Mix Aleatório do Plano"
+      : requestedPlaylistIds.length > 1
+      ? `${requestedPlaylistIds.length} Playlists Selecionadas`
+      : activePlaylist?.name ?? "Playlist Padrão";
 
     return {
       status: 200,
       data: {
         clientId: targetClientId,
         deviceId: 1,
-        playlistId: isRandomPlanMix ? 0 : activePlaylist?.id ?? 0,
-        playlistName: isRandomPlanMix ? "🔀 Mix Aleatório do Plano" : activePlaylist?.name ?? "Playlist Padrão",
-        coverUrl: isRandomPlanMix ? undefined : activePlaylist?.coverUrl,
-        genre: isRandomPlanMix ? "Mix Variado" : activePlaylist?.genre,
+        playlistId: isRandomPlanMix ? 0 : (requestedPlaylistIds[0] ?? activePlaylist?.id ?? 0),
+        playlistName: displayPlaylistName,
+        coverUrl: isRandomPlanMix || requestedPlaylistIds.length > 1 ? undefined : activePlaylist?.coverUrl,
+        genre: isRandomPlanMix ? "Mix Variado" : requestedPlaylistIds.length > 1 ? "Multi-Gêneros" : activePlaylist?.genre,
         isGlobal: true,
         commercialPlaylistId: activeCommercialPlaylist?.id ?? null,
         commercialPlaylistName: activeCommercialPlaylist?.name ?? null,
@@ -1160,26 +1527,24 @@ export async function handleStandaloneRequest(
       return true;
     });
 
-    // 2. Global Playlists (Acervo Geral)
+    // 2. Global Playlists (Acervo Geral / Estilos Musicais)
     const clientPlan = targetClient.plan || "standard";
     const allowedGlobalIds = Array.isArray(targetClient.allowedGlobalPlaylistIds) ? targetClient.allowedGlobalPlaylistIds : null;
 
     const allGlobalPlaylists = allPlaylists.filter((p) => p.isGlobal === true && p.active !== false);
 
-    let accessibleGlobalPlaylists = allGlobalPlaylists;
-    if (allowedGlobalIds && allowedGlobalIds.length > 0) {
-      accessibleGlobalPlaylists = allGlobalPlaylists.filter((p) => allowedGlobalIds.includes(p.id));
-    } else {
-      accessibleGlobalPlaylists = allGlobalPlaylists.filter((p) => {
-        if (!p.allowedPlans || p.allowedPlans.includes("all")) return true;
-        return p.allowedPlans.includes(clientPlan);
-      });
-      if (clientPlan === "standard") {
-        accessibleGlobalPlaylists = accessibleGlobalPlaylists.slice(0, 10);
-      } else if (clientPlan === "master") {
-        accessibleGlobalPlaylists = accessibleGlobalPlaylists.slice(0, 30);
+    let accessibleGlobalPlaylists = allGlobalPlaylists.filter((p) => {
+      // If playlist has specific clients assigned:
+      if (Array.isArray(p.allowedClientIds) && p.allowedClientIds.length > 0) {
+        return p.allowedClientIds.includes(targetClient.id);
       }
-    }
+      // Otherwise, check plan access
+      if (allowedGlobalIds && allowedGlobalIds.length > 0) {
+        return allowedGlobalIds.includes(p.id);
+      }
+      if (!p.allowedPlans || p.allowedPlans.includes("all")) return true;
+      return p.allowedPlans.includes(clientPlan);
+    });
 
     const exclusiveResult = exclusivePlaylists.map((p) => {
       const clientName = clientMap.get(p.clientId) || "";
@@ -1205,6 +1570,8 @@ export async function handleStandaloneRequest(
       active: p.active,
       clientId: p.clientId,
       isGlobal: true,
+      allowedPlans: Array.isArray(p.allowedPlans) ? p.allowedPlans : ["all"],
+      allowedClientIds: Array.isArray(p.allowedClientIds) ? p.allowedClientIds : [],
       coverUrl: p.coverUrl,
       genre: p.genre,
       category: "global" as const,
@@ -1226,6 +1593,17 @@ export async function handleStandaloneRequest(
       if (dev) {
         if (dev.status === "blocked") {
           return { status: 200, data: { status: "blocked", success: false, message: "Dispositivo bloqueado" } };
+        }
+
+        if (dev.status === "duplicate") {
+          return {
+            status: 200,
+            data: {
+              status: "duplicate",
+              success: false,
+              message: `Este e-mail (${email}) foi conectado em outra estação.`,
+            },
+          };
         }
 
         // Check if another terminal logged in with the same email in the meantime (and not tofani100@gmail.com)
@@ -1253,25 +1631,16 @@ export async function handleStandaloneRequest(
         if (email) dev.email = email;
         await update("devices", dev);
         return { status: 200, data: { status: dev.status, success: true } };
-      } else if (email) {
-        const clients = await getAll<DBClient>("clients");
-        const matchClient = clients.find((c) =>
-          (c.masterEmail && c.masterEmail.toLowerCase() === email) ||
-          (Array.isArray(c.authorizedEmails) && c.authorizedEmails.some((e) => e.toLowerCase() === email)) ||
-          (c.email && c.email.toLowerCase() === email)
-        );
-        const newDev: Omit<DBDevice, "id"> = {
-          clientId: matchClient?.id ?? 0,
-          name: email.split("@")[0] || "Device",
-          pairingCode: "",
-          uuid: uuid || `dev-${Date.now()}`,
-          email: email,
-          status: "active",
-          lastSeen: nowIso,
-          createdAt: nowIso,
+      } else {
+        // Device record does not exist (was deleted or disconnected by admin/takeover)
+        return {
+          status: 200,
+          data: {
+            status: "disconnected",
+            success: false,
+            message: "Terminal não registrado ou desconectado pelo painel.",
+          },
         };
-        await insert("devices", newDev);
-        return { status: 200, data: { status: "active", success: true } };
       }
     }
     return { status: 200, data: { status: "active", success: true } };
@@ -1520,13 +1889,15 @@ export async function handleStandaloneRequest(
     if (clientIdParam === "global" || isGlobalParam === "true") {
       result = playlists.filter((p) => p.isGlobal === true);
     } else if (clientIdParam) {
-      result = playlists.filter((p) => p.clientId === parseInt(clientIdParam) && !p.isGlobal);
+      result = playlists.filter((p) => Number(p.clientId) === parseInt(clientIdParam) && !p.isGlobal);
     }
 
     const enriched = result.map((p) => ({
       ...p,
+      active: p.active !== undefined ? p.active : true,
       isGlobal: !!p.isGlobal,
       allowedPlans: Array.isArray(p.allowedPlans) ? p.allowedPlans : ["all"],
+      allowedClientIds: Array.isArray(p.allowedClientIds) ? p.allowedClientIds : [],
       unitEmails: Array.isArray(p.unitEmails) ? p.unitEmails : [],
       itemCount: allItems.filter((i) => i.playlistId === p.id && i.active !== false).length,
     }));
@@ -1550,31 +1921,34 @@ export async function handleStandaloneRequest(
           console.warn("[Storage] Cover upload failed, using Data URL fallback:", err);
           coverUrl = await new Promise<string>((resolve) => {
             const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result as string);
+            reader.onload = () => resolve(reader.result as string);
             reader.readAsDataURL(file);
           });
         }
       }
-    } else if (body?.coverUrl) {
-      coverUrl = body.coverUrl;
+    } else if (body && body.dataUrl) {
+      coverUrl = body.dataUrl;
     }
     return { status: 200, data: { url: coverUrl } };
   }
 
   if (path === "/api/playlists" && method === "POST") {
-    const { name, clientId, playbackMode, isGlobal, allowedPlans, unitEmails, coverUrl, genre } = body || {};
+    const { name, clientId, playbackMode, isGlobal, allowedPlans, allowedClientIds, unitEmails, coverUrl, genre, active } = body || {};
+    const parsedClientId = Number(clientId) || 1;
     const newPl: Omit<DBPlaylist, "id"> = {
-      name: name || "Nova Playlist",
-      clientId: typeof clientId === "number" ? clientId : 1,
+      name: (name || "Nova Playlist").trim(),
+      clientId: parsedClientId,
       playbackMode: playbackMode || "sequential",
-      active: true,
+      active: active !== undefined ? Boolean(active) : true,
       createdAt: new Date().toISOString(),
       isGlobal: !!isGlobal,
       allowedPlans: Array.isArray(allowedPlans) ? allowedPlans : ["all"],
+      allowedClientIds: Array.isArray(allowedClientIds) ? allowedClientIds.map(Number).filter(n => !isNaN(n)) : [],
       unitEmails: Array.isArray(unitEmails) ? unitEmails : [],
-      coverUrl: coverUrl || undefined,
-      genre: genre || undefined,
     };
+    if (coverUrl) newPl.coverUrl = coverUrl;
+    if (genre) newPl.genre = genre;
+
     const id = await insert("playlists", newPl);
     return { status: 201, data: { id, ...newPl, itemCount: 0 } };
   }
@@ -1610,8 +1984,10 @@ export async function handleStandaloneRequest(
         status: 200,
         data: {
           ...playlist,
+          active: playlist.active !== undefined ? playlist.active : true,
           isGlobal: !!playlist.isGlobal,
           allowedPlans: Array.isArray(playlist.allowedPlans) ? playlist.allowedPlans : ["all"],
+          allowedClientIds: Array.isArray(playlist.allowedClientIds) ? playlist.allowedClientIds : [],
           unitEmails: Array.isArray(playlist.unitEmails) ? playlist.unitEmails : [],
           items: validItems,
         },
@@ -1627,7 +2003,9 @@ export async function handleStandaloneRequest(
         id: plId,
         isGlobal: body.isGlobal !== undefined ? !!body.isGlobal : !!playlist.isGlobal,
         allowedPlans: Array.isArray(body.allowedPlans) ? body.allowedPlans : playlist.allowedPlans || ["all"],
+        allowedClientIds: Array.isArray(body.allowedClientIds) ? body.allowedClientIds.map(Number).filter((n: number) => !isNaN(n)) : (playlist.allowedClientIds || []),
         unitEmails: Array.isArray(body.unitEmails) ? body.unitEmails : playlist.unitEmails || [],
+        active: body.active !== undefined ? Boolean(body.active) : (playlist.active !== undefined ? playlist.active : true),
       };
       await update("playlists", updated);
       return { status: 200, data: updated };
@@ -1646,12 +2024,14 @@ export async function handleStandaloneRequest(
     const mediaIds: number[] = body?.mediaIds || [];
     const allItems = await getAll<DBPlaylistItem>("playlistItems");
     const currentItems = allItems.filter((i) => i.playlistId === playlistId);
+    const existingMediaIds = new Set(currentItems.map((i) => i.mediaId));
     let currentPos = currentItems.length;
     let addedCount = 0;
 
     for (const mId of mediaIds) {
       const numMediaId = Number(mId);
-      if (!isNaN(numMediaId)) {
+      if (!isNaN(numMediaId) && !existingMediaIds.has(numMediaId)) {
+        existingMediaIds.add(numMediaId);
         await insert("playlistItems", {
           playlistId,
           mediaId: numMediaId,
@@ -1668,11 +2048,16 @@ export async function handleStandaloneRequest(
   if (plItemsMatch && method === "POST") {
     const playlistId = parseInt(plItemsMatch[1]!);
     const { mediaId, position } = body || {};
+    const numMediaId = parseInt(mediaId);
     const allItems = await getAll<DBPlaylistItem>("playlistItems");
     const currentItems = allItems.filter((i) => i.playlistId === playlistId);
+    const existing = currentItems.find((i) => i.mediaId === numMediaId);
+    if (existing) {
+      return { status: 200, data: existing };
+    }
     const pos = typeof position === "number" ? position : currentItems.length;
-    const id = await insert("playlistItems", { playlistId, mediaId: parseInt(mediaId), position: pos });
-    return { status: 201, data: { id, playlistId, mediaId: parseInt(mediaId), position: pos } };
+    const id = await insert("playlistItems", { playlistId, mediaId: numMediaId, position: pos });
+    return { status: 201, data: { id, playlistId, mediaId: numMediaId, position: pos } };
   }
   if (plItemsMatch && method === "DELETE") {
     const playlistId = parseInt(plItemsMatch[1]!);
@@ -1998,7 +2383,22 @@ export async function handleStandaloneRequest(
   if (path.startsWith("/api/devices/") && method === "DELETE") {
     const id = parseInt(path.split("/").pop() || "0");
     if (id) {
-      await remove("devices", id);
+      try {
+        const allDevs = await getAll<DBDevice>("devices");
+        const targetDev = allDevs.find((d) => d.id === id);
+        const targetEmail = targetDev?.email?.trim().toLowerCase();
+        await remove("devices", id);
+        if (targetEmail) {
+          const others = allDevs.filter((d) => d.email && d.email.trim().toLowerCase() === targetEmail && d.id !== id);
+          for (const od of others) {
+            await remove("devices", od.id).catch(() => {});
+          }
+        }
+      } catch (err) {
+        console.warn("[DELETE device] Erro ao remover dispositivo:", err);
+        await remove("devices", id).catch(() => {});
+      }
+      invalidateStoreCache("devices");
     }
     return { status: 200, data: { success: true, message: "Device deleted" } };
   }

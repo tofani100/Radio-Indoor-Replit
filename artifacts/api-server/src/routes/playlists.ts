@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, playlistsTable, playlistItemsTable, mediaTable, clientsTable } from "@workspace/db";
-import { eq, count, asc } from "drizzle-orm";
+import { eq, count, asc, and } from "drizzle-orm";
 import { requireAdmin } from "../middlewares/auth";
 
 const router = Router();
@@ -113,6 +113,18 @@ router.post("/playlists/:playlistId/items", requireAdmin, async (req, res) => {
     res.status(400).json({ error: "Bad Request", message: "mediaId required" });
     return;
   }
+
+  // Prevent duplicate: check if this mediaId already exists in the playlist
+  const [existing] = await db
+    .select({ id: playlistItemsTable.id })
+    .from(playlistItemsTable)
+    .where(and(eq(playlistItemsTable.playlistId, playlistId), eq(playlistItemsTable.mediaId, mediaId)))
+    .limit(1);
+  if (existing) {
+    res.status(409).json({ error: "Conflict", message: "Media already in playlist" });
+    return;
+  }
+
   const [{ maxPos }] = await db
     .select({ maxPos: count(playlistItemsTable.id) })
     .from(playlistItemsTable)
@@ -131,17 +143,32 @@ router.post("/playlists/:playlistId/items/batch", requireAdmin, async (req, res)
     res.status(400).json({ error: "Bad Request", message: "mediaIds array required" });
     return;
   }
+
+  // Fetch already-existing mediaIds in this playlist to prevent duplicates
+  const existingItems = await db
+    .select({ mediaId: playlistItemsTable.mediaId })
+    .from(playlistItemsTable)
+    .where(eq(playlistItemsTable.playlistId, playlistId));
+  const existingMediaIds = new Set(existingItems.map((i) => i.mediaId));
+
+  // Only insert mediaIds not already present
+  const newMediaIds = mediaIds.filter((id) => !existingMediaIds.has(id));
+  if (newMediaIds.length === 0) {
+    res.status(200).json({ added: 0, skipped: mediaIds.length, message: "All tracks already in playlist" });
+    return;
+  }
+
   const [{ maxPos }] = await db
     .select({ maxPos: count(playlistItemsTable.id) })
     .from(playlistItemsTable)
     .where(eq(playlistItemsTable.playlistId, playlistId));
-  const values = mediaIds.map((mediaId, idx) => ({
+  const values = newMediaIds.map((mediaId, idx) => ({
     playlistId,
     mediaId,
     position: (maxPos as number) + idx,
   }));
   await db.insert(playlistItemsTable).values(values);
-  res.status(201).json({ added: values.length });
+  res.status(201).json({ added: values.length, skipped: mediaIds.length - values.length });
 });
 
 router.put("/playlists/:playlistId/reorder", requireAdmin, async (req, res) => {

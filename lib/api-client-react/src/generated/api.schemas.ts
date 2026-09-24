@@ -173,6 +173,7 @@ export interface Device {
 export interface RegisterDeviceBody {
   uuid: string;
   email: string;
+  forceTakeover?: boolean;
 }
 
 export type DeviceStatusStatus =
@@ -278,6 +279,7 @@ export interface Playlist {
   createdAt: string;
   isGlobal?: boolean;
   allowedPlans?: string[];
+  allowedClientIds?: number[];
   unitEmails?: string[];
   coverUrl?: string;
   genre?: string;
@@ -309,6 +311,7 @@ export interface PlaylistWithItems {
   createdAt: string;
   isGlobal?: boolean;
   allowedPlans?: string[];
+  allowedClientIds?: number[];
   unitEmails?: string[];
   coverUrl?: string;
   genre?: string;
@@ -326,8 +329,10 @@ export interface CreatePlaylistBody {
   name: string;
   clientId: number;
   playbackMode?: CreatePlaylistBodyPlaybackMode;
+  active?: boolean;
   isGlobal?: boolean;
   allowedPlans?: string[];
+  allowedClientIds?: number[];
   unitEmails?: string[];
   coverUrl?: string;
   genre?: string;
@@ -347,6 +352,7 @@ export interface UpdatePlaylistBody {
   active?: boolean;
   isGlobal?: boolean;
   allowedPlans?: string[];
+  allowedClientIds?: number[];
   unitEmails?: string[];
   coverUrl?: string;
   genre?: string;

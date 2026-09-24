@@ -1,13 +1,15 @@
 import { useState, useRef, useMemo } from "react";
 import {
   Upload, Trash2, Music, CheckCircle2, XCircle, Loader2, ListMusic,
-  Plus, Image as ImageIcon, Sparkles, Search, Play, Pause, Pencil, X
+  Plus, Image as ImageIcon, Sparkles, Search, Play, Pause, Pencil, X,
+  Users, Check, AlertCircle, EyeOff, Eye, Minimize2, Maximize2
 } from "lucide-react";
 import {
   useListPlaylists, getListPlaylistsQueryKey,
   useCreatePlaylist, useUpdatePlaylist, useDeletePlaylist,
   useGetPlaylist, getGetPlaylistQueryKey,
   useRemovePlaylistItem,
+  useListClients,
   handleStandaloneRequest,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -41,8 +43,13 @@ export default function MediaPage() {
   const qc = useQueryClient();
   const { toast } = useToast();
 
+  const { data: clients } = useListClients();
+  const [createClientSearch, setCreateClientSearch] = useState("");
+  const [editClientSearch, setEditClientSearch] = useState("");
+
   const [playlistSearch, setPlaylistSearch] = useState("");
   const [playlistGenreFilter, setPlaylistGenreFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
 
   // ── Create Album Modal ──
   const [createPlOpen, setCreatePlOpen] = useState(false);
@@ -51,6 +58,8 @@ export default function MediaPage() {
     genre: "Pop",
     customGenre: "",
     allowedPlan: "all",
+    clientAccessMode: "all" as "all" | "specific" | "inactive",
+    selectedClientIds: [] as number[],
     playbackMode: "sequential",
     coverUrl: "",
   });
@@ -62,9 +71,18 @@ export default function MediaPage() {
 
   // ── Album Detail / Studio Dialog ──
   const [activeAlbumId, setActiveAlbumId] = useState<number | null>(null);
-  const [albumUploadFiles, setAlbumUploadFiles] = useState<UploadFileItem[]>([]);
-  const [isUploadingToAlbum, setIsUploadingToAlbum] = useState(false);
   const albumDirectInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Background Upload Sessions (support concurrent minimized uploads) ──
+  interface BackgroundUploadSession {
+    albumId: number;
+    albumName: string;
+    coverUrl: string;
+    genre: string;
+    files: UploadFileItem[];
+    isUploading: boolean;
+  }
+  const [uploadSessions, setUploadSessions] = useState<BackgroundUploadSession[]>([]);
 
   // ── Edit Album Metadata Modal ──
   const [editPlTarget, setEditPlTarget] = useState<any | null>(null);
@@ -76,8 +94,8 @@ export default function MediaPage() {
 
   // ── Query Playlists (Acervo Musical) ──
   const globalPlParams = { isGlobal: true } as any;
-  const { data: globalPlaylists, isLoading: plLoading } = useListPlaylists(globalPlParams, {
-    query: { queryKey: getListPlaylistsQueryKey(globalPlParams) },
+  const { data: globalPlaylists, isLoading: plLoading, isFetching: plFetching } = useListPlaylists(globalPlParams, {
+    query: { queryKey: getListPlaylistsQueryKey(globalPlParams), staleTime: 5 * 60 * 1000 },
   });
 
   // Query for the currently open album in the Album Studio dialog
@@ -177,6 +195,9 @@ export default function MediaPage() {
     const finalGenre = plForm.genre === "custom" ? plForm.customGenre.trim() || "Variado" : plForm.genre;
 
     try {
+      const isActive = plForm.clientAccessMode !== "inactive";
+      const clientIds = plForm.clientAccessMode === "all" ? [] : plForm.selectedClientIds;
+
       // 1. Create playlist
       const res = await handleStandaloneRequest("/api/playlists", "POST", {
         name: plForm.name.trim(),
@@ -186,6 +207,8 @@ export default function MediaPage() {
         genre: finalGenre,
         coverUrl: plForm.coverUrl.trim() || undefined,
         allowedPlans: plForm.allowedPlan === "all" ? ["all"] : [plForm.allowedPlan],
+        allowedClientIds: clientIds,
+        active: isActive,
       });
 
       const newPlaylistId = res.data?.id;
@@ -223,7 +246,7 @@ export default function MediaPage() {
         }
       }
 
-      toast({ title: "Álbum musical criado com sucesso!" });
+      toast({ title: isActive ? "Álbum musical criado com sucesso!" : "Álbum musical criado como Inativo (Standby)!" });
       invalidatePlaylists();
       setCreatePlOpen(false);
       setPlForm({
@@ -231,6 +254,8 @@ export default function MediaPage() {
         genre: "Pop",
         customGenre: "",
         allowedPlan: "all",
+        clientAccessMode: "all",
+        selectedClientIds: [],
         playbackMode: "sequential",
         coverUrl: "",
       });
@@ -243,8 +268,16 @@ export default function MediaPage() {
   };
 
   // ── Upload Tracks Directly into an Existing Album ──
-  const handleDirectAlbumMusicUpload = async (files: FileList | null) => {
-    if (!files || !activeAlbumId) return;
+  const handleDirectAlbumMusicUpload = async (files: FileList | null, targetAlbumId?: number) => {
+    const albumId = targetAlbumId ?? activeAlbumId;
+    if (!files || !albumId) return;
+
+    // Get album metadata for the minimized bar
+    const albumMeta = (globalPlaylists || []).find((p: any) => p.id === albumId);
+    const albumName = albumMeta?.name || `Álbum #${albumId}`;
+    const coverUrl = albumMeta?.coverUrl || "";
+    const genre = albumMeta?.genre || "";
+
     const items: UploadFileItem[] = Array.from(files).map((f) => ({
       file: f,
       title: f.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ").trim(),
@@ -252,14 +285,42 @@ export default function MediaPage() {
       status: "queued",
     }));
 
-    setAlbumUploadFiles(items);
-    setIsUploadingToAlbum(true);
+    // Create or append to the upload session for this album
+    setUploadSessions((prev) => {
+      const existing = prev.find((s) => s.albumId === albumId);
+      if (existing) {
+        return prev.map((s) =>
+          s.albumId === albumId
+            ? { ...s, files: [...s.files, ...items], isUploading: true }
+            : s
+        );
+      }
+      return [...prev, { albumId, albumName, coverUrl, genre, files: items, isUploading: true }];
+    });
+
+    const updateFile = (idx: number, patch: Partial<UploadFileItem>) => {
+      setUploadSessions((prev) =>
+        prev.map((s) =>
+          s.albumId === albumId
+            ? { ...s, files: s.files.map((f, i) => (i === idx ? { ...f, ...patch } : f)) }
+            : s
+        )
+      );
+    };
+
+    // Get the starting index (in case we appended to existing session)
+    const startIdx = await new Promise<number>((resolve) => {
+      setUploadSessions((prev) => {
+        const session = prev.find((s) => s.albumId === albumId);
+        resolve(session ? session.files.length - items.length : 0);
+        return prev;
+      });
+    });
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i]!;
-      setAlbumUploadFiles((prev) =>
-        prev.map((u, idx) => (idx === i ? { ...u, status: "uploading", progress: 20 } : u))
-      );
+      const fileIdx = startIdx + i;
+      updateFile(fileIdx, { status: "uploading", progress: 20 });
 
       try {
         const fd = new FormData();
@@ -267,31 +328,48 @@ export default function MediaPage() {
         fd.append("title", item.title);
         fd.append("type", "music");
         fd.append("clientId", "1");
-        fd.append("playlistId", String(activeAlbumId));
+        fd.append("playlistId", String(albumId));
 
         await handleStandaloneRequest("/api/media", "POST", fd, (pct) => {
-          setAlbumUploadFiles((prev) =>
-            prev.map((u, idx) => (idx === i ? { ...u, progress: pct } : u))
-          );
+          updateFile(fileIdx, { progress: pct });
         });
 
-        setAlbumUploadFiles((prev) =>
-          prev.map((u, idx) => (idx === i ? { ...u, status: "done", progress: 100 } : u))
-        );
+        updateFile(fileIdx, { status: "done", progress: 100 });
       } catch {
-        setAlbumUploadFiles((prev) =>
-          prev.map((u, idx) => (idx === i ? { ...u, status: "error" } : u))
-        );
+        updateFile(fileIdx, { status: "error" });
       }
     }
 
-    setIsUploadingToAlbum(false);
-    toast({ title: "Músicas adicionadas ao álbum!" });
+    // Mark session as done
+    setUploadSessions((prev) =>
+      prev.map((s) =>
+        s.albumId === albumId ? { ...s, isUploading: false } : s
+      )
+    );
+    toast({ title: `Músicas adicionadas ao álbum "${albumName}"!` });
     invalidatePlaylists();
+  };
+
+  // Helper: get active session for current album
+  const activeSession = uploadSessions.find((s) => s.albumId === activeAlbumId);
+  const isUploadingToAlbum = activeSession?.isUploading ?? false;
+  const albumUploadFiles = activeSession?.files ?? [];
+
+  // Minimize handler: close dialog but keep upload running
+  const handleMinimizeAlbum = () => {
+    setActiveAlbumId(null);
+    setPreviewAudioUrl(null);
+  };
+
+  // Remove completed session
+  const dismissUploadSession = (albumId: number) => {
+    setUploadSessions((prev) => prev.filter((s) => s.albumId !== albumId));
   };
 
   const handleEditPlSubmit = () => {
     if (!editPlTarget || !editPlTarget.name.trim()) return;
+    const isActive = editPlTarget.clientAccessMode !== "inactive";
+    const clientIds = editPlTarget.clientAccessMode === "all" ? [] : (editPlTarget.selectedClientIds || []);
     updatePl.mutate({
       playlistId: editPlTarget.id,
       data: {
@@ -299,6 +377,8 @@ export default function MediaPage() {
         genre: editPlTarget.genre?.trim() || "Variado",
         coverUrl: editPlTarget.coverUrl || undefined,
         allowedPlans: editPlTarget.allowedPlan === "all" ? ["all"] : [editPlTarget.allowedPlan],
+        allowedClientIds: clientIds,
+        active: isActive,
         playbackMode: editPlTarget.playbackMode || "sequential",
       } as any,
     });
@@ -311,9 +391,21 @@ export default function MediaPage() {
     return `${m}:${sec.toString().padStart(2, "0")}`;
   };
 
+  const getClientBadgeText = (pl: any) => {
+    const ids: number[] = Array.isArray(pl.allowedClientIds) ? pl.allowedClientIds : [];
+    if (ids.length === 0) return "Todos os Clientes";
+    if (ids.length === 1) {
+      const c = (clients || []).find((cl) => cl.id === ids[0]);
+      return c ? c.name : "1 Cliente";
+    }
+    return `${ids.length} Clientes`;
+  };
+
   const filteredGlobalPlaylists = useMemo(() => {
     if (!globalPlaylists) return [];
     return globalPlaylists.filter((p: any) => {
+      if (statusFilter === "active" && p.active === false) return false;
+      if (statusFilter === "inactive" && p.active !== false) return false;
       if (playlistGenreFilter !== "all" && p.genre?.toLowerCase() !== playlistGenreFilter.toLowerCase()) {
         return false;
       }
@@ -326,7 +418,7 @@ export default function MediaPage() {
       }
       return true;
     });
-  }, [globalPlaylists, playlistGenreFilter, playlistSearch]);
+  }, [globalPlaylists, playlistGenreFilter, playlistSearch, statusFilter]);
 
   const togglePreviewAudio = (url?: string) => {
     if (!url) return;
@@ -357,6 +449,12 @@ export default function MediaPage() {
               <Music className="w-6 h-6" />
             </span>
             <span>Biblioteca & Acervo Musical</span>
+            {plFetching && !plLoading && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-primary bg-primary/10 border border-primary/20 px-2.5 py-0.5 rounded-full font-medium animate-pulse ml-2">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Sincronizando dados...
+              </span>
+            )}
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
             Crie álbuns e estilos musicais com capas temáticas e envie as músicas diretamente para dentro de cada álbum.
@@ -370,6 +468,8 @@ export default function MediaPage() {
               genre: playlistGenreFilter !== "all" ? playlistGenreFilter : "Pop",
               customGenre: "",
               allowedPlan: "all",
+              clientAccessMode: "all",
+              selectedClientIds: [],
               playbackMode: "sequential",
               coverUrl: "",
             });
@@ -397,16 +497,60 @@ export default function MediaPage() {
         </div>
       </div>
 
-      {/* Search & Genre Filters */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-        <div className="relative flex-1 max-w-sm">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Buscar por álbum ou estilo musical..."
-            value={playlistSearch}
-            onChange={(e) => setPlaylistSearch(e.target.value)}
-            className="pl-9 text-xs"
-          />
+      {/* Search, Status & Genre Filters */}
+      <div className="space-y-3">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          <div className="relative flex-1 max-w-sm">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Buscar por álbum ou estilo musical..."
+              value={playlistSearch}
+              onChange={(e) => setPlaylistSearch(e.target.value)}
+              className="pl-9 text-xs"
+            />
+          </div>
+
+          <div className="flex items-center gap-1.5 p-1 rounded-xl bg-muted/60 border self-start sm:self-auto text-xs">
+            <span className="text-[11px] text-muted-foreground font-medium px-2">Status:</span>
+            <button
+              type="button"
+              onClick={() => setStatusFilter("all")}
+              className={cn(
+                "px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer",
+                statusFilter === "all"
+                  ? "bg-background text-foreground shadow-xs border"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              Todos ({globalPlaylists?.length || 0})
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter("active")}
+              className={cn(
+                "px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1",
+                statusFilter === "active"
+                  ? "bg-background text-emerald-600 dark:text-emerald-400 shadow-xs border"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Check className="w-3 h-3 text-emerald-500" />
+              <span>Ativas ({(globalPlaylists || []).filter((p: any) => p.active !== false).length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter("inactive")}
+              className={cn(
+                "px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1",
+                statusFilter === "inactive"
+                  ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 shadow-xs border border-amber-500/30"
+                  : "text-muted-foreground hover:text-amber-600"
+              )}
+            >
+              <EyeOff className="w-3 h-3 text-amber-500" />
+              <span>Inativas ({(globalPlaylists || []).filter((p: any) => p.active === false).length})</span>
+            </button>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
@@ -502,18 +646,25 @@ export default function MediaPage() {
                         {pl.genre}
                       </span>
                     )}
-                    <span
-                      className={cn(
-                        "px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide shadow backdrop-blur-md",
-                        isMasterOnly
-                          ? "bg-amber-500/90 text-black"
-                          : isStandardOnly
-                          ? "bg-blue-500/90 text-white"
-                          : "bg-emerald-600/90 text-white"
+                    <div className="flex items-center gap-1">
+                      {pl.active === false && (
+                        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide shadow backdrop-blur-md bg-amber-600/90 text-white flex items-center gap-1">
+                          <EyeOff className="w-2.5 h-2.5" /> Inativa
+                        </span>
                       )}
-                    >
-                      {isMasterOnly ? "Master" : isStandardOnly ? "Standard" : "Todos Planos"}
-                    </span>
+                      <span
+                        className={cn(
+                          "px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide shadow backdrop-blur-md",
+                          isMasterOnly
+                            ? "bg-amber-500/90 text-black"
+                            : isStandardOnly
+                            ? "bg-blue-500/90 text-white"
+                            : "bg-emerald-600/90 text-white"
+                        )}
+                      >
+                        {isMasterOnly ? "Master" : isStandardOnly ? "Standard" : "Todos Planos"}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Hover Overlay Button to Manage Songs */}
@@ -536,6 +687,34 @@ export default function MediaPage() {
                     <p className="text-xs text-muted-foreground mt-0.5">
                       {pl.itemCount ?? 0} {pl.itemCount === 1 ? "música cadastrada" : "músicas cadastradas"}
                     </p>
+                    <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                      {pl.active === false ? (
+                        <span
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30"
+                          title="Playlist inativa: visível apenas nesta tela de gestão até ser ativada"
+                        >
+                          <EyeOff className="w-3 h-3 text-amber-500" />
+                          <span>Inativa (Oculta p/ Clientes)</span>
+                        </span>
+                      ) : (
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border",
+                            Array.isArray(pl.allowedClientIds) && pl.allowedClientIds.length > 0
+                              ? "bg-primary/10 text-primary border-primary/25"
+                              : "bg-muted text-muted-foreground border-border"
+                          )}
+                          title={
+                            Array.isArray(pl.allowedClientIds) && pl.allowedClientIds.length > 0
+                              ? `Exclusivo para: ${pl.allowedClientIds.map((cid: number) => clients?.find((c) => c.id === cid)?.name || `ID ${cid}`).join(", ")}`
+                              : "Disponível para todos os clientes"
+                          }
+                        >
+                          <Users className="w-3 h-3" />
+                          <span className="truncate max-w-[150px]">{getClientBadgeText(pl)}</span>
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {/* Action Bar */}
@@ -556,13 +735,23 @@ export default function MediaPage() {
                         title="Editar capa e detalhes"
                         onClick={() => {
                           const plan = pl.allowedPlans && pl.allowedPlans.length === 1 ? pl.allowedPlans[0] : "all";
+                          const clientIds = Array.isArray(pl.allowedClientIds) ? pl.allowedClientIds : [];
+                          const isActive = pl.active !== false;
+                          const clientAccessMode: "all" | "specific" | "inactive" = !isActive
+                            ? "inactive"
+                            : clientIds.length > 0
+                            ? "specific"
+                            : "all";
                           setEditPlTarget({
                             id: pl.id,
                             name: pl.name,
                             genre: pl.genre || "Pop",
                             coverUrl: pl.coverUrl || "",
                             allowedPlan: plan,
+                            clientAccessMode,
+                            selectedClientIds: clientIds,
                             playbackMode: pl.playbackMode || "sequential",
+                            active: isActive,
                           });
                         }}
                       >
@@ -590,7 +779,7 @@ export default function MediaPage() {
           MODAL: CRIAR NOVA PLAYLIST MUSICAL (COM UPLOAD DIRETO DE MÚSICAS)
       ───────────────────────────────────────────────────────────── */}
       <Dialog open={createPlOpen} onOpenChange={(o) => { if (!isCreatingAlbum) setCreatePlOpen(o); }}>
-        <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <span className="p-1.5 rounded-lg bg-primary/10 text-primary">
@@ -648,6 +837,165 @@ export default function MediaPage() {
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+
+            {/* Destino dos Clientes (Vínculo de Clientes) */}
+            <div className="p-3 rounded-xl border bg-muted/20 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-semibold flex items-center gap-1.5">
+                  <Users className="w-4 h-4 text-primary" />
+                  <span>Vincular aos Clientes</span>
+                </Label>
+                <span className="text-[10px] text-muted-foreground font-medium">
+                  {plForm.clientAccessMode === "all"
+                    ? "Liberado para todos os clientes"
+                    : plForm.clientAccessMode === "specific"
+                    ? `${plForm.selectedClientIds.length} cliente(s) selecionado(s)`
+                    : "Inativa (oculta para clientes)"}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setPlForm({ ...plForm, clientAccessMode: "all", selectedClientIds: [] })}
+                  className={cn(
+                    "p-2.5 rounded-lg border text-left flex items-start gap-2 transition-all cursor-pointer",
+                    plForm.clientAccessMode === "all"
+                      ? "border-primary bg-primary/10 text-foreground font-semibold shadow-xs"
+                      : "border-border bg-background text-muted-foreground hover:border-primary/50"
+                  )}
+                >
+                  <div className={cn("w-4 h-4 rounded-full border mt-0.5 flex items-center justify-center flex-none", plForm.clientAccessMode === "all" ? "border-primary bg-primary text-white" : "border-muted-foreground")}>
+                    {plForm.clientAccessMode === "all" && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold">Todos os Clientes</div>
+                    <div className="text-[10px] text-muted-foreground font-normal">Disponível para qualquer rádio do plano</div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPlForm({ ...plForm, clientAccessMode: "specific" })}
+                  className={cn(
+                    "p-2.5 rounded-lg border text-left flex items-start gap-2 transition-all cursor-pointer",
+                    plForm.clientAccessMode === "specific"
+                      ? "border-primary bg-primary/10 text-foreground font-semibold shadow-xs"
+                      : "border-border bg-background text-muted-foreground hover:border-primary/50"
+                  )}
+                >
+                  <div className={cn("w-4 h-4 rounded-full border mt-0.5 flex items-center justify-center flex-none", plForm.clientAccessMode === "specific" ? "border-primary bg-primary text-white" : "border-muted-foreground")}>
+                    {plForm.clientAccessMode === "specific" && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold">Clientes Específicos</div>
+                    <div className="text-[10px] text-muted-foreground font-normal">Selecione quais clientes terão acesso</div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPlForm({ ...plForm, clientAccessMode: "inactive" })}
+                  className={cn(
+                    "p-2.5 rounded-lg border text-left flex items-start gap-2 transition-all cursor-pointer",
+                    plForm.clientAccessMode === "inactive"
+                      ? "border-amber-500 bg-amber-500/10 text-foreground font-semibold shadow-xs"
+                      : "border-border bg-background text-muted-foreground hover:border-amber-500/50"
+                  )}
+                >
+                  <div className={cn("w-4 h-4 rounded-full border mt-0.5 flex items-center justify-center flex-none", plForm.clientAccessMode === "inactive" ? "border-amber-500 bg-amber-500 text-white" : "border-muted-foreground")}>
+                    {plForm.clientAccessMode === "inactive" && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold flex items-center gap-1.5">
+                      <span>Inativa</span>
+                      <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold uppercase">Standby</span>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground font-normal">Oculta para clientes até você ativar</div>
+                  </div>
+                </button>
+              </div>
+
+              {/* Aviso quando Inativa */}
+              {plForm.clientAccessMode === "inactive" && (
+                <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-700 dark:text-amber-300 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 flex-none text-amber-500" />
+                  <span>Esta playlist fica criada e pronta no sistema, visível apenas para a gestão nesta tela. Ela não aparecerá para nenhum cliente até ser ativada.</span>
+                </div>
+              )}
+
+              {/* Lista de clientes para seleção quando específico */}
+              {plForm.clientAccessMode === "specific" && (
+                <div className="pt-2 border-t border-border/60 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="relative flex-1">
+                      <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        placeholder="Filtrar clientes..."
+                        value={createClientSearch}
+                        onChange={(e) => setCreateClientSearch(e.target.value)}
+                        className="h-7 text-xs pl-8"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-none text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allIds = (clients || []).map((c) => c.id);
+                          setPlForm({ ...plForm, selectedClientIds: allIds });
+                        }}
+                        className="text-primary hover:underline"
+                      >
+                        Marcar todos
+                      </button>
+                      <span className="text-muted-foreground">|</span>
+                      <button
+                        type="button"
+                        onClick={() => setPlForm({ ...plForm, selectedClientIds: [] })}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Limpar
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="max-h-36 overflow-y-auto border rounded-lg divide-y bg-background">
+                    {(!clients || clients.length === 0) ? (
+                      <div className="p-3 text-center text-xs text-muted-foreground">Nenhum cliente cadastrado</div>
+                    ) : (
+                      clients
+                        .filter((c) => !createClientSearch.trim() || c.name.toLowerCase().includes(createClientSearch.toLowerCase()))
+                        .map((client) => {
+                          const isSelected = plForm.selectedClientIds.includes(client.id);
+                          return (
+                            <label
+                              key={client.id}
+                              className="flex items-center gap-2.5 p-2 hover:bg-muted/40 cursor-pointer text-xs transition-colors"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setPlForm({ ...plForm, selectedClientIds: [...plForm.selectedClientIds, client.id] });
+                                  } else {
+                                    setPlForm({ ...plForm, selectedClientIds: plForm.selectedClientIds.filter((id) => id !== client.id) });
+                                  }
+                                }}
+                                className="rounded border-border text-primary focus:ring-primary w-4 h-4 cursor-pointer"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <span className="font-semibold text-foreground truncate block">{client.name}</span>
+                                <span className="text-[10px] text-muted-foreground">{client.plan === "master" ? "Plano Master" : "Plano Standard"}</span>
+                              </div>
+                            </label>
+                          );
+                        })
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {plForm.genre === "custom" && (
@@ -784,28 +1132,77 @@ export default function MediaPage() {
               </Button>
 
               {selectedMusicFiles.length > 0 && (
-                <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1 border rounded-lg p-2 bg-muted/20">
-                  {selectedMusicFiles.map((item, idx) => (
-                    <div key={idx} className="flex items-center justify-between gap-2 p-1.5 rounded bg-card border text-xs">
-                      <span className="truncate flex-1 font-medium">{item.title}</span>
-                      {item.status === "uploading" && (
-                        <span className="text-[10px] text-primary font-mono flex items-center gap-1">
-                          <Loader2 className="w-3 h-3 animate-spin" /> {item.progress}%
-                        </span>
-                      )}
-                      {item.status === "done" && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />}
-                      {item.status === "queued" && (
-                        <button
-                          type="button"
-                          onClick={() => setSelectedMusicFiles((prev) => prev.filter((_, i) => i !== idx))}
-                          className="text-muted-foreground hover:text-destructive p-0.5"
-                          title="Remover da lista"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  ))}
+                <div className="space-y-2">
+                  {/* Barra de progresso global durante upload */}
+                  {isCreatingAlbum && (() => {
+                    const completedCount = selectedMusicFiles.filter(u => u.status === "done" || u.status === "error").length;
+                    const totalCount = selectedMusicFiles.length;
+                    const globalPercent = Math.round((completedCount / totalCount) * 100);
+                    return (
+                      <div className="p-3 bg-primary/5 border border-primary/20 rounded-lg space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-bold text-foreground flex items-center gap-2">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                            Enviando músicas...
+                          </p>
+                          <span className="text-sm font-bold text-primary font-mono whitespace-nowrap">
+                            {completedCount} de {totalCount}
+                          </span>
+                        </div>
+                        <div className="space-y-1">
+                          <div className="w-full h-2.5 bg-muted rounded-full overflow-hidden border">
+                            <div
+                              className="h-full bg-gradient-to-r from-primary to-primary/80 rounded-full transition-all duration-500 ease-out"
+                              style={{ width: `${globalPercent}%` }}
+                            />
+                          </div>
+                          <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                            <span>
+                              {completedCount < totalCount
+                                ? `Enviando arquivo ${completedCount + 1} de ${totalCount}...`
+                                : "Finalizando..."}
+                            </span>
+                            <span className="font-mono font-semibold text-foreground">{globalPercent}%</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1 border rounded-lg p-2 bg-muted/20">
+                    {selectedMusicFiles.map((item, idx) => (
+                      <div key={idx} className="flex items-center justify-between gap-2 p-1.5 rounded bg-card border text-xs">
+                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                          {item.status === "done" && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 flex-none" />}
+                          {item.status === "uploading" && <Loader2 className="w-3 h-3 animate-spin text-primary flex-none" />}
+                          {item.status === "error" && <XCircle className="w-3.5 h-3.5 text-destructive flex-none" />}
+                          <span className={cn(
+                            "truncate flex-1 font-medium",
+                            item.status === "done" ? "text-muted-foreground line-through" : ""
+                          )}>{item.title}</span>
+                        </div>
+                        {item.status === "uploading" && (
+                          <span className="text-[10px] text-primary font-mono flex items-center gap-1">
+                            {item.progress}%
+                          </span>
+                        )}
+                        {item.status === "done" && (
+                          <span className="text-[10px] text-emerald-600 font-mono font-semibold">100%</span>
+                        )}
+                        {item.status === "queued" && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedMusicFiles((prev) => prev.filter((_, i) => i !== idx))}
+                            className="text-muted-foreground hover:text-destructive p-0.5"
+                            title="Remover da lista"
+                            disabled={isCreatingAlbum}
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -825,8 +1222,8 @@ export default function MediaPage() {
       {/* ─────────────────────────────────────────────────────────────
           MODAL: ÁLBUM STUDIO (VISUALIZAR, OUVIR E SUBIR MÚSICAS NO ÁLBUM)
       ───────────────────────────────────────────────────────────── */}
-      <Dialog open={!!activeAlbumId} onOpenChange={(o) => { if (!o && !isUploadingToAlbum) setActiveAlbumId(null); }}>
-        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+      <Dialog open={!!activeAlbumId} onOpenChange={(o) => { if (!o) handleMinimizeAlbum(); }}>
+        <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-y-auto">
           {albumLoading ? (
             <div className="p-8 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-primary" /></div>
           ) : activeAlbumData ? (
@@ -852,11 +1249,20 @@ export default function MediaPage() {
                         {activeAlbumData.genre}
                       </span>
                     )}
+                    {(activeAlbumData as any).active === false ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30 font-bold uppercase flex items-center gap-1">
+                        <EyeOff className="w-3 h-3" /> Inativa
+                      </span>
+                    ) : (
+                      <span className="text-[10px] px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30 font-bold uppercase flex items-center gap-1">
+                        <Check className="w-3 h-3" /> Ativa
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
                     {activeAlbumData.items?.length ?? 0} faixas cadastradas neste álbum
                   </p>
-                  <div className="flex items-center gap-2 mt-3">
+                  <div className="flex items-center gap-2 mt-3 flex-wrap">
                     <Button
                       size="sm"
                       onClick={() => albumDirectInputRef.current?.click()}
@@ -871,19 +1277,41 @@ export default function MediaPage() {
                       size="sm"
                       onClick={() => {
                         const plan = activeAlbumData.allowedPlans && activeAlbumData.allowedPlans.length === 1 ? activeAlbumData.allowedPlans[0] : "all";
+                        const clientIds = Array.isArray((activeAlbumData as any).allowedClientIds) ? (activeAlbumData as any).allowedClientIds : [];
+                        const isActive = (activeAlbumData as any).active !== false;
+                        const clientAccessMode: "all" | "specific" | "inactive" = !isActive
+                          ? "inactive"
+                          : clientIds.length > 0
+                          ? "specific"
+                          : "all";
                         setEditPlTarget({
                           id: activeAlbumData.id,
                           name: activeAlbumData.name,
                           genre: activeAlbumData.genre || "Pop",
                           coverUrl: activeAlbumData.coverUrl || "",
                           allowedPlan: plan,
+                          clientAccessMode,
+                          selectedClientIds: clientIds,
                           playbackMode: activeAlbumData.playbackMode || "sequential",
+                          active: isActive,
                         });
                       }}
                       className="text-xs gap-1"
                     >
                       <Pencil className="w-3 h-3" /> Editar Capa / Dados
                     </Button>
+                    {isUploadingToAlbum && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleMinimizeAlbum}
+                        className="text-xs gap-1.5 border-amber-500/40 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10"
+                        title="Minimizar e continuar upload em segundo plano"
+                      >
+                        <Minimize2 className="w-3.5 h-3.5" />
+                        <span>Minimizar Upload</span>
+                      </Button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -898,22 +1326,64 @@ export default function MediaPage() {
               />
 
               {/* Progress bar of current upload into this album */}
-              {isUploadingToAlbum && albumUploadFiles.length > 0 && (
-                <div className="p-3 bg-primary/5 border border-primary/20 rounded-lg space-y-2">
-                  <p className="text-xs font-semibold text-foreground flex items-center gap-2">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-                    Enviando novas músicas para o álbum...
-                  </p>
-                  <div className="space-y-1 max-h-24 overflow-y-auto">
-                    {albumUploadFiles.map((u, i) => (
-                      <div key={i} className="flex items-center justify-between text-[11px]">
-                        <span className="truncate flex-1">{u.title}</span>
-                        <span className="font-mono text-muted-foreground">{u.progress}%</span>
+              {isUploadingToAlbum && albumUploadFiles.length > 0 && (() => {
+                const completedCount = albumUploadFiles.filter(u => u.status === "done" || u.status === "error").length;
+                const totalCount = albumUploadFiles.length;
+                const globalPercent = Math.round((completedCount / totalCount) * 100);
+                return (
+                  <div className="p-4 bg-primary/5 border border-primary/20 rounded-lg space-y-3">
+                    {/* Header com contador X de Y */}
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-bold text-foreground flex items-center gap-2">
+                        <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                        Enviando novas músicas para o álbum...
+                      </p>
+                      <span className="text-sm font-bold text-primary font-mono whitespace-nowrap">
+                        {completedCount} de {totalCount}
+                      </span>
+                    </div>
+
+                    {/* Barra de progresso global */}
+                    <div className="space-y-1.5">
+                      <div className="w-full h-3 bg-muted rounded-full overflow-hidden border">
+                        <div
+                          className="h-full bg-gradient-to-r from-primary to-primary/80 rounded-full transition-all duration-500 ease-out"
+                          style={{ width: `${globalPercent}%` }}
+                        />
                       </div>
-                    ))}
+                      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                        <span>
+                          {completedCount < totalCount
+                            ? `Enviando arquivo ${completedCount + 1} de ${totalCount}...`
+                            : "Finalizando..."}
+                        </span>
+                        <span className="font-mono font-semibold text-foreground">{globalPercent}%</span>
+                      </div>
+                    </div>
+
+                    {/* Lista de arquivos com status individual */}
+                    <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
+                      {albumUploadFiles.map((u, i) => (
+                        <div key={i} className="flex items-center justify-between text-[11px] gap-2">
+                          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                            {u.status === "done" && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 flex-none" />}
+                            {u.status === "uploading" && <Loader2 className="w-3.5 h-3.5 animate-spin text-primary flex-none" />}
+                            {u.status === "queued" && <div className="w-3.5 h-3.5 rounded-full border-2 border-muted-foreground/30 flex-none" />}
+                            {u.status === "error" && <XCircle className="w-3.5 h-3.5 text-destructive flex-none" />}
+                            <span className={cn("truncate", u.status === "done" ? "text-muted-foreground line-through" : "text-foreground")}>{u.title}</span>
+                          </div>
+                          <span className={cn(
+                            "font-mono text-[10px] flex-none",
+                            u.status === "done" ? "text-emerald-600 font-semibold" : "text-muted-foreground"
+                          )}>
+                            {u.status === "done" ? "100%" : u.status === "error" ? "Erro" : `${u.progress}%`}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Lista de Músicas do Álbum */}
               <div>
@@ -977,9 +1447,21 @@ export default function MediaPage() {
             </div>
           ) : null}
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => { setActiveAlbumId(null); setPreviewAudioUrl(null); }}>
-              Fechar
+          <DialogFooter className="flex-row justify-between sm:justify-between">
+            {isUploadingToAlbum ? (
+              <Button
+                variant="outline"
+                onClick={handleMinimizeAlbum}
+                className="gap-1.5 border-amber-500/40 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10"
+              >
+                <Minimize2 className="w-4 h-4" />
+                Minimizar (upload continua)
+              </Button>
+            ) : (
+              <div />
+            )}
+            <Button variant="outline" onClick={handleMinimizeAlbum}>
+              {isUploadingToAlbum ? "Fechar & Continuar em 2º Plano" : "Fechar"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1030,6 +1512,166 @@ export default function MediaPage() {
                   </Select>
                 </div>
               </div>
+
+              {/* Destino dos Clientes (Vínculo de Clientes na Edição) */}
+              <div className="p-3 rounded-xl border bg-muted/20 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-semibold flex items-center gap-1.5">
+                    <Users className="w-4 h-4 text-primary" />
+                    <span>Vincular aos Clientes</span>
+                  </Label>
+                  <span className="text-[10px] text-muted-foreground font-medium">
+                    {editPlTarget.clientAccessMode === "all"
+                      ? "Liberado para todos os clientes"
+                      : editPlTarget.clientAccessMode === "specific"
+                      ? `${(editPlTarget.selectedClientIds || []).length} cliente(s) selecionado(s)`
+                      : "Inativa (oculta para clientes)"}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setEditPlTarget({ ...editPlTarget, clientAccessMode: "all", selectedClientIds: [] })}
+                    className={cn(
+                      "p-2.5 rounded-lg border text-left flex items-start gap-2 transition-all cursor-pointer",
+                      editPlTarget.clientAccessMode === "all"
+                        ? "border-primary bg-primary/10 text-foreground font-semibold shadow-xs"
+                        : "border-border bg-background text-muted-foreground hover:border-primary/50"
+                    )}
+                  >
+                    <div className={cn("w-4 h-4 rounded-full border mt-0.5 flex items-center justify-center flex-none", editPlTarget.clientAccessMode === "all" ? "border-primary bg-primary text-white" : "border-muted-foreground")}>
+                      {editPlTarget.clientAccessMode === "all" && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold">Todos os Clientes</div>
+                      <div className="text-[10px] text-muted-foreground font-normal">Disponível para qualquer rádio do plano</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setEditPlTarget({ ...editPlTarget, clientAccessMode: "specific" })}
+                    className={cn(
+                      "p-2.5 rounded-lg border text-left flex items-start gap-2 transition-all cursor-pointer",
+                      editPlTarget.clientAccessMode === "specific"
+                        ? "border-primary bg-primary/10 text-foreground font-semibold shadow-xs"
+                        : "border-border bg-background text-muted-foreground hover:border-primary/50"
+                    )}
+                  >
+                    <div className={cn("w-4 h-4 rounded-full border mt-0.5 flex items-center justify-center flex-none", editPlTarget.clientAccessMode === "specific" ? "border-primary bg-primary text-white" : "border-muted-foreground")}>
+                      {editPlTarget.clientAccessMode === "specific" && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold">Clientes Específicos</div>
+                      <div className="text-[10px] text-muted-foreground font-normal">Selecione quais clientes terão acesso</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setEditPlTarget({ ...editPlTarget, clientAccessMode: "inactive" })}
+                    className={cn(
+                      "p-2.5 rounded-lg border text-left flex items-start gap-2 transition-all cursor-pointer",
+                      editPlTarget.clientAccessMode === "inactive"
+                        ? "border-amber-500 bg-amber-500/10 text-foreground font-semibold shadow-xs"
+                        : "border-border bg-background text-muted-foreground hover:border-amber-500/50"
+                    )}
+                  >
+                    <div className={cn("w-4 h-4 rounded-full border mt-0.5 flex items-center justify-center flex-none", editPlTarget.clientAccessMode === "inactive" ? "border-amber-500 bg-amber-500 text-white" : "border-muted-foreground")}>
+                      {editPlTarget.clientAccessMode === "inactive" && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold flex items-center gap-1.5">
+                        <span>Inativa</span>
+                        <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold uppercase">Standby</span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-normal">Oculta para clientes até você ativar</div>
+                    </div>
+                  </button>
+                </div>
+
+                {/* Aviso quando Inativa */}
+                {editPlTarget.clientAccessMode === "inactive" && (
+                  <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-700 dark:text-amber-300 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 flex-none text-amber-500" />
+                    <span>Esta playlist está inativa no sistema, visível apenas para a gestão nesta tela. Ela não aparecerá para os clientes até você mudar para "Todos os Clientes" ou "Clientes Específicos".</span>
+                  </div>
+                )}
+
+                {/* Lista de clientes para seleção na edição */}
+                {editPlTarget.clientAccessMode === "specific" && (
+                  <div className="pt-2 border-t border-border/60 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="relative flex-1">
+                        <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                          placeholder="Filtrar clientes..."
+                          value={editClientSearch}
+                          onChange={(e) => setEditClientSearch(e.target.value)}
+                          className="h-7 text-xs pl-8"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-none text-[11px]">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const allIds = (clients || []).map((c) => c.id);
+                            setEditPlTarget({ ...editPlTarget, selectedClientIds: allIds });
+                          }}
+                          className="text-primary hover:underline"
+                        >
+                          Marcar todos
+                        </button>
+                        <span className="text-muted-foreground">|</span>
+                        <button
+                          type="button"
+                          onClick={() => setEditPlTarget({ ...editPlTarget, selectedClientIds: [] })}
+                          className="text-muted-foreground hover:text-foreground"
+                        >
+                          Limpar
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="max-h-36 overflow-y-auto border rounded-lg divide-y bg-background">
+                      {(!clients || clients.length === 0) ? (
+                        <div className="p-3 text-center text-xs text-muted-foreground">Nenhum cliente cadastrado</div>
+                      ) : (
+                        clients
+                          .filter((c) => !editClientSearch.trim() || c.name.toLowerCase().includes(editClientSearch.toLowerCase()))
+                          .map((client) => {
+                            const isSelected = (editPlTarget.selectedClientIds || []).includes(client.id);
+                            return (
+                              <label
+                                key={client.id}
+                                className="flex items-center gap-2.5 p-2 hover:bg-muted/40 cursor-pointer text-xs transition-colors"
+                              >
+                                <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={(e) => {
+                                  const cur = editPlTarget.selectedClientIds || [];
+                                  if (e.target.checked) {
+                                    setEditPlTarget({ ...editPlTarget, selectedClientIds: [...cur, client.id] });
+                                  } else {
+                                    setEditPlTarget({ ...editPlTarget, selectedClientIds: cur.filter((id: number) => id !== client.id) });
+                                  }
+                                }}
+                                className="rounded border-border text-primary focus:ring-primary w-4 h-4 cursor-pointer"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <span className="font-semibold text-foreground truncate block">{client.name}</span>
+                                <span className="text-[10px] text-muted-foreground">{client.plan === "master" ? "Plano Master" : "Plano Standard"}</span>
+                              </div>
+                            </label>
+                          );
+                        })
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
 
               {/* Capa */}
               <div className="space-y-2 pt-2 border-t">
@@ -1105,6 +1747,107 @@ export default function MediaPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ─────────────────────────────────────────────────────────────
+          FLOATING MINIMIZED UPLOAD BARS (background uploads)
+      ───────────────────────────────────────────────────────────── */}
+      {uploadSessions.filter((s) => s.albumId !== activeAlbumId).length > 0 && (
+        <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-md w-full">
+          {uploadSessions
+            .filter((s) => s.albumId !== activeAlbumId)
+            .map((session) => {
+              const completedCount = session.files.filter((f) => f.status === "done" || f.status === "error").length;
+              const totalCount = session.files.length;
+              const globalPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+
+              return (
+                <div
+                  key={session.albumId}
+                  className="bg-card border border-border rounded-xl shadow-lg overflow-hidden animate-in slide-in-from-bottom-4 duration-300"
+                >
+                  {/* Progress bar on top */}
+                  <div className="h-1.5 bg-muted">
+                    <div
+                      className={cn(
+                        "h-full rounded-r-full transition-all duration-500",
+                        session.isUploading
+                          ? "bg-gradient-to-r from-primary to-primary/80"
+                          : globalPercent === 100
+                          ? "bg-emerald-500"
+                          : "bg-amber-500"
+                      )}
+                      style={{ width: `${globalPercent}%` }}
+                    />
+                  </div>
+
+                  <div className="p-3 flex items-center gap-3">
+                    {/* Cover thumbnail */}
+                    {session.coverUrl ? (
+                      <img
+                        src={session.coverUrl}
+                        alt={session.albumName}
+                        className="w-10 h-10 rounded-lg object-cover border flex-none"
+                      />
+                    ) : (
+                      <div className="w-10 h-10 rounded-lg bg-primary/10 border flex items-center justify-center text-primary flex-none">
+                        <Music className="w-5 h-5" />
+                      </div>
+                    )}
+
+                    {/* Info */}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-foreground truncate">{session.albumName}</p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        {session.isUploading ? (
+                          <>
+                            <Loader2 className="w-3 h-3 animate-spin text-primary flex-none" />
+                            <span className="text-[11px] text-muted-foreground">
+                              Enviando {completedCount + 1} de {totalCount}...
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle2 className="w-3 h-3 text-emerald-500 flex-none" />
+                            <span className="text-[11px] text-emerald-600">
+                              {completedCount} de {totalCount} concluído(s)
+                            </span>
+                          </>
+                        )}
+                        <span className="text-[11px] font-mono font-bold text-foreground ml-auto">
+                          {globalPercent}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-1 flex-none">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 text-primary hover:text-primary hover:bg-primary/10"
+                        title="Abrir álbum"
+                        onClick={() => setActiveAlbumId(session.albumId)}
+                      >
+                        <Maximize2 className="w-4 h-4" />
+                      </Button>
+                      {!session.isUploading && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                          title="Dispensar"
+                          onClick={() => dismissUploadSession(session.albumId)}
+                        >
+                          <X className="w-4 h-4" />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+        </div>
+      )}
     </div>
   );
 }

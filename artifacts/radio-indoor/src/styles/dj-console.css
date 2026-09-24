@@ -1,4 +1,6 @@
-.dj-console-scope {
+:root,
+.dj-console-scope,
+[role="dialog"] {
   --dj-bg: #060a14;
   --dj-panel: #0d1322;
   --dj-panel-hover: #161e32;
@@ -8,12 +10,26 @@
   --dj-magenta: #ff0055;
   --dj-magenta-glow: rgba(255, 0, 85, 0.2);
   --dj-text: #f8fafc;
-  --dj-muted: #64748b;
+  --dj-muted: #94a3b8;
   --dj-accent: #334155;
+}
 
+.dj-console-scope {
   background-color: var(--dj-bg);
   color: var(--dj-text);
   font-family: 'Inter', sans-serif;
+}
+
+.dj-console-scope button:not(:disabled),
+.dj-console-scope [role="button"]:not([aria-disabled="true"]),
+[role="dialog"] button:not(:disabled),
+[role="dialog"] [role="button"]:not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+
+.dj-console-scope button:disabled,
+[role="dialog"] button:disabled {
+  cursor: not-allowed;
 }
 
 .dj-mono {

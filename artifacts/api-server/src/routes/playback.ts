@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, devicesTable, clientsTable, playlistsTable, playlistItemsTable, mediaTable, playbackLogsTable } from "@workspace/db";
-import { eq, and, asc, inArray } from "drizzle-orm";
+import { eq, and, asc, inArray, count } from "drizzle-orm";
 
 const router = Router();
 
@@ -90,39 +90,39 @@ router.get("/playback/playlists", async (req, res) => {
   const clientIds = matchingClients.map((c) => c.id);
   const clientMap = new Map(matchingClients.map((c) => [c.id, c.name]));
 
-  const playlists = await db
+  // Single query: join playlist_items and count per playlist (no N+1)
+  const playlistsWithCount = await db
     .select({
       id: playlistsTable.id,
       name: playlistsTable.name,
       clientId: playlistsTable.clientId,
+      itemCount: count(playlistItemsTable.id),
     })
     .from(playlistsTable)
+    .leftJoin(playlistItemsTable, eq(playlistItemsTable.playlistId, playlistsTable.id))
     .where(and(inArray(playlistsTable.clientId, clientIds), eq(playlistsTable.active, true)))
+    .groupBy(playlistsTable.id, playlistsTable.name, playlistsTable.clientId)
     .orderBy(asc(playlistsTable.id));
 
-  // Get item counts per playlist
-  const playlistsWithCount = await Promise.all(
-    playlists.map(async (pl) => {
-      const items = await db
-        .select({ id: playlistItemsTable.id })
-        .from(playlistItemsTable)
-        .where(eq(playlistItemsTable.playlistId, pl.id));
-      const clientName = clientMap.get(pl.clientId) ?? "";
-      return {
-        id: pl.id,
-        name: matchingClients.length > 1 ? `${clientName} — ${pl.name}` : pl.name,
-        clientName,
-        itemCount: items.length,
-      };
-    })
-  );
+  const response = playlistsWithCount.map((pl) => {
+    const clientName = clientMap.get(pl.clientId) ?? "";
+    return {
+      id: pl.id,
+      name: matchingClients.length > 1 ? `${clientName} — ${pl.name}` : pl.name,
+      clientName,
+      itemCount: Number(pl.itemCount),
+      // Global playlists belong to the system client (id=1); commercial ones to the specific client
+      isGlobal: pl.clientId === 1,
+    };
+  });
 
-  res.json(playlistsWithCount);
+  res.json(response);
 });
+
 
 // Public - get playback queue for a device
 router.get("/playback/queue", async (req, res) => {
-  const { uuid, email, playlistId } = req.query;
+  const { uuid, email, playlistId, playlistIds } = req.query;
   if (!uuid || !email) {
     res.status(400).json({ error: "Bad Request", message: "uuid and email required" });
     return;
@@ -137,22 +137,23 @@ router.get("/playback/queue", async (req, res) => {
   const { device, client, matchingClients } = result;
   const clientIds = matchingClients.map((c) => c.id);
 
+  const requestedPlaylistIds = playlistIds
+    ? (playlistIds as string).split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n > 0)
+    : (playlistId && parseInt(playlistId as string, 10) > 0 ? [parseInt(playlistId as string, 10)] : []);
+
   // Try to load the requested playlist among all authorized clients; fall back to first active
   let playlist: { id: number; name: string; clientId: number; playbackMode: string; active: boolean } | undefined;
   let activeClient = client;
 
-  if (playlistId) {
-    const requestedId = parseInt(playlistId as string, 10);
-    if (!isNaN(requestedId)) {
-      const [found] = await db
-        .select()
-        .from(playlistsTable)
-        .where(and(eq(playlistsTable.id, requestedId), inArray(playlistsTable.clientId, clientIds), eq(playlistsTable.active, true)))
-        .limit(1);
-      if (found) {
-        playlist = found;
-        activeClient = matchingClients.find((c) => c.id === found.clientId) ?? client;
-      }
+  if (requestedPlaylistIds.length > 0) {
+    const [found] = await db
+      .select()
+      .from(playlistsTable)
+      .where(and(inArray(playlistsTable.id, requestedPlaylistIds), inArray(playlistsTable.clientId, clientIds), eq(playlistsTable.active, true)))
+      .limit(1);
+    if (found) {
+      playlist = found;
+      activeClient = matchingClients.find((c) => c.id === found.clientId) ?? client;
     }
   }
 
@@ -188,6 +189,8 @@ router.get("/playback/queue", async (req, res) => {
     return;
   }
 
+  const queryPlaylistIds = requestedPlaylistIds.length > 0 ? requestedPlaylistIds : [playlist.id];
+
   const items = await db
     .select({
       id: mediaTable.id,
@@ -204,13 +207,23 @@ router.get("/playback/queue", async (req, res) => {
     })
     .from(playlistItemsTable)
     .innerJoin(mediaTable, eq(playlistItemsTable.mediaId, mediaTable.id))
-    .where(eq(playlistItemsTable.playlistId, playlist.id))
+    .where(inArray(playlistItemsTable.playlistId, queryPlaylistIds))
     .orderBy(asc(playlistItemsTable.position));
 
   const itemsWithUrl = items.map((item) => ({
     ...item,
     url: `/api/uploads/${item.filename}`,
   }));
+
+  // Deduplicate by mediaId — keeps only the first occurrence per track.
+  // This corrects any double-inserts that may already exist in the database
+  // without requiring a database migration or cleanup script.
+  const seen = new Set<number>();
+  const dedupedItems = itemsWithUrl.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
 
   res.json({
     clientId: activeClient.id,
@@ -225,7 +238,7 @@ router.get("/playback/queue", async (req, res) => {
     jingleIntervalSeconds: activeClient.jingleIntervalSeconds,
     musicVolume: 1.0,
     jingleVolume: 0.8,
-    items: itemsWithUrl,
+    items: dedupedItems,
   });
 });
 

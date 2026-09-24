@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, devicesTable, clientsTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, or } from "drizzle-orm";
 import { requireAdmin } from "../middlewares/auth";
 
 const router = Router();
@@ -36,6 +36,8 @@ router.post("/devices/register", async (req, res) => {
   const matchAuthorized = !!resolvedClient;
   const isMasterEmail = cleanEmail === "tofani100@gmail.com";
 
+  const forceTakeover = !!req.body.forceTakeover;
+
   // Check if another device is currently active with this email (except master email)
   if (!isMasterEmail && matchAuthorized) {
     const ACTIVE_SESSION_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
@@ -43,13 +45,16 @@ router.post("/devices/register", async (req, res) => {
     const conflicting = allDevicesForEmail.find(
       (d) => d.uuid !== cleanUuid && d.status === "active" && isOnline(d.lastSeen)
     );
-    if (conflicting) {
+    if (conflicting && !forceTakeover) {
       res.json({
         status: "duplicate",
         message: `este email (${cleanEmail}) já esta logado em outra estação e não pode ser duplicado! peça autorização ao administrador do sistema !`,
         registered: false,
       });
       return;
+    }
+    if (conflicting && forceTakeover) {
+      await db.delete(devicesTable).where(eq(devicesTable.id, conflicting.id));
     }
   }
 
@@ -168,6 +173,28 @@ router.post("/devices/heartbeat", async (req, res) => {
   res.json({ success: true });
 });
 
+// Public - Disconnect / Logout device (release session immediately)
+router.post(["/devices/disconnect", "/devices/logout"], async (req, res) => {
+  const { uuid, email } = req.body;
+  if (!uuid && !email) {
+    res.status(400).json({ error: "Bad Request", message: "uuid or email required" });
+    return;
+  }
+  const conditions = [];
+  if (uuid) conditions.push(eq(devicesTable.uuid, uuid.trim()));
+  if (email) conditions.push(eq(devicesTable.email, email.trim().toLowerCase()));
+
+  try {
+    if (conditions.length > 0) {
+      await db.delete(devicesTable).where(or(...conditions));
+    }
+    res.json({ success: true, message: "Device disconnected and removed successfully" });
+  } catch (err) {
+    console.error("[DISCONNECT] Error deleting device:", err);
+    res.status(500).json({ error: "Internal Server Error", message: "Failed to disconnect device" });
+  }
+});
+
 // Admin - List devices
 router.get("/devices", requireAdmin, async (req, res) => {
   const { clientId, status } = req.query;
@@ -234,7 +261,12 @@ router.post("/devices/:deviceId/block", requireAdmin, async (req, res) => {
 
 router.delete("/devices/:deviceId", requireAdmin, async (req, res) => {
   const deviceId = parseInt(req.params["deviceId"] as string);
-  await db.delete(devicesTable).where(eq(devicesTable.id, deviceId));
+  const [target] = await db.select().from(devicesTable).where(eq(devicesTable.id, deviceId)).limit(1);
+  if (target?.email) {
+    await db.delete(devicesTable).where(eq(devicesTable.email, target.email.trim().toLowerCase()));
+  } else {
+    await db.delete(devicesTable).where(eq(devicesTable.id, deviceId));
+  }
   res.json({ success: true, message: "Device deleted" });
 });
 

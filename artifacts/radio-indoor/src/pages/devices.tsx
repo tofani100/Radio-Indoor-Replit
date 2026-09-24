@@ -18,6 +18,8 @@ import {
   useListClients,
   getListClientsQueryKey,
   useDeleteDevice,
+  handleStandaloneRequest,
+  customFetch,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -117,16 +119,32 @@ export default function DevicesPage() {
     for (const client of targetClients) {
       const clientDevices = devices.filter((d) => d.clientId === client.id);
 
+      const getBestDevice = (cleanEmail: string) => {
+        const matches = clientDevices.filter((d) => d.email?.trim().toLowerCase() === cleanEmail);
+        if (matches.length === 0) return null;
+        const nowMs = Date.now();
+        const ACTIVE_THRESHOLD = 5 * 60 * 1000;
+        return matches.sort((a, b) => {
+          const aOnline = (a as any).isOnline ?? (a.status === "active" && a.lastSeen ? nowMs - new Date(a.lastSeen).getTime() < ACTIVE_THRESHOLD : false);
+          const bOnline = (b as any).isOnline ?? (b.status === "active" && b.lastSeen ? nowMs - new Date(b.lastSeen).getTime() < ACTIVE_THRESHOLD : false);
+          if (aOnline && !bOnline) return -1;
+          if (!aOnline && bOnline) return 1;
+          const aTime = a.lastSeen ? new Date(a.lastSeen).getTime() : 0;
+          const bTime = b.lastSeen ? new Date(b.lastSeen).getTime() : 0;
+          return bTime - aTime;
+        })[0];
+      };
+
       // 1. Master Email
       if (client.masterEmail) {
         const cleanEmail = client.masterEmail.trim().toLowerCase();
         const key = `${client.id}:${cleanEmail}`;
         if (!seenEmails.has(key)) {
           seenEmails.add(key);
-          const dev = clientDevices.find((d) => d.email?.trim().toLowerCase() === cleanEmail);
+          const dev = getBestDevice(cleanEmail);
           const isOnline = dev
             ? (dev as any).isOnline ??
-              (dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < 5 * 60 * 1000 : false)
+              (dev.status === "active" && dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < 5 * 60 * 1000 : false)
             : false;
           entries.push({
             id: `master-${client.id}-${cleanEmail}`,
@@ -151,10 +169,10 @@ export default function DevicesPage() {
         const key = `${client.id}:${cleanEmail}`;
         if (!seenEmails.has(key)) {
           seenEmails.add(key);
-          const dev = clientDevices.find((d) => d.email?.trim().toLowerCase() === cleanEmail);
+          const dev = getBestDevice(cleanEmail);
           const isOnline = dev
             ? (dev as any).isOnline ??
-              (dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < 5 * 60 * 1000 : false)
+              (dev.status === "active" && dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < 5 * 60 * 1000 : false)
             : false;
           entries.push({
             id: `auth-${client.id}-${cleanEmail}`,
@@ -177,10 +195,10 @@ export default function DevicesPage() {
         const key = `${client.id}:${cleanEmail}`;
         if (!seenEmails.has(key)) {
           seenEmails.add(key);
-          const dev = clientDevices.find((d) => d.email?.trim().toLowerCase() === cleanEmail);
+          const dev = getBestDevice(cleanEmail);
           const isOnline = dev
             ? (dev as any).isOnline ??
-              (dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < 5 * 60 * 1000 : false)
+              (dev.status === "active" && dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < 5 * 60 * 1000 : false)
             : false;
           entries.push({
             id: `login-${client.id}-${cleanEmail}`,
@@ -206,7 +224,7 @@ export default function DevicesPage() {
           seenEmails.add(key);
           const isOnline =
             (dev as any).isOnline ??
-            (dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < 5 * 60 * 1000 : false);
+            (dev.status === "active" && dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < 5 * 60 * 1000 : false);
           entries.push({
             id: `dev-${dev.id}-${cleanEmail}`,
             email: dev.email,
@@ -614,10 +632,10 @@ export default function DevicesPage() {
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Remover terminal?</DialogTitle>
+            <DialogTitle>Desconectar e liberar terminal?</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            O registro de conexão de <strong>{deleteTarget?.email}</strong> será removido do painel.
+            A sessão e registro de conexão de <strong>{deleteTarget?.email}</strong> serão desconectados do sistema e o e-mail será liberado imediatamente para nova conexão em qualquer estação.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>
@@ -625,10 +643,33 @@ export default function DevicesPage() {
             </Button>
             <Button
               variant="destructive"
-              onClick={() => deleteTarget && del.mutate({ deviceId: deleteTarget.id })}
+              onClick={async () => {
+                if (!deleteTarget) return;
+                try {
+                  await handleStandaloneRequest("/api/devices/disconnect", "POST", {
+                    email: deleteTarget.email,
+                  }).catch(() => {});
+                  await customFetch("/api/devices/disconnect", {
+                    method: "POST",
+                    body: JSON.stringify({ email: deleteTarget.email }),
+                  }).catch(() => {});
+                  if (deleteTarget.id) {
+                    await del.mutateAsync({ deviceId: deleteTarget.id }).catch(() => {});
+                  }
+                  toast({
+                    title: "Terminal desconectado",
+                    description: `O e-mail ${deleteTarget.email} foi liberado com sucesso.`,
+                  });
+                  qc.invalidateQueries({ queryKey: getListDevicesQueryKey({}) });
+                } catch {
+                  del.mutate({ deviceId: deleteTarget.id });
+                } finally {
+                  setDeleteTarget(null);
+                }
+              }}
               disabled={del.isPending}
             >
-              Remover
+              Desconectar e Liberar
             </Button>
           </DialogFooter>
         </DialogContent>
