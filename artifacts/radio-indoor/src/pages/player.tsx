@@ -1868,22 +1868,12 @@ export default function PlayerPage() {
         {/* Center: Queue */}
         <div className="lg:w-1/3 bg-[var(--dj-panel)] border border-[var(--dj-border)] rounded-lg shadow-lg flex flex-col overflow-hidden lg:min-h-0 max-h-64 sm:max-h-80 lg:max-h-none">
           <div className="px-3 py-1.5 lg:px-5 lg:py-2 border-b border-[var(--dj-border)] flex items-center justify-between bg-[var(--dj-bg)]/30 flex-none">
-            <h2 className="text-[10px] lg:text-xs uppercase font-bold text-[var(--dj-muted)] tracking-widest flex items-center gap-1.5">
-              <Hash className="w-3 h-3 lg:w-4 lg:h-4" /> Fila ({musicCount} {musicCount === 1 ? "música" : "músicas"}{commercialCount > 0 ? ` • ${commercialCount} spots` : ""})
+            <h2
+              className="text-[10px] lg:text-xs uppercase font-bold text-[var(--dj-muted)] tracking-widest flex items-center gap-1.5"
+              title={`${musicCount} ${musicCount === 1 ? "música" : "músicas"}${commercialCount > 0 ? ` • ${commercialCount} spots comerciais intercalados` : ""}${tracksUntilJingle !== null ? ` (próxima vinheta em T-${tracksUntilJingle})` : ""}`}
+            >
+              <Hash className="w-3 h-3 lg:w-4 lg:h-4" /> Fila
             </h2>
-            {queue?.jingleMode === "time" ? (
-              <div className="flex items-center gap-1.5 bg-amber-500/10 border border-amber-500/30 text-amber-300 px-2 py-0.5 rounded text-[9px] uppercase font-bold tracking-wider">
-                <Clock className="w-2.5 h-2.5 text-amber-400" />
-                {jingleTimeRemaining !== null
-                  ? `Próximo spot em ${fmtMMSS(jingleTimeRemaining)}`
-                  : `A cada ${fmtMMSS(queue?.jingleIntervalSeconds ?? 900)}`}
-              </div>
-            ) : tracksUntilJingle !== null ? (
-              <div className="flex items-center gap-1.5 bg-[var(--dj-magenta-glow)] border border-[var(--dj-magenta)] text-[var(--dj-magenta)] px-2 py-0.5 rounded text-[9px] uppercase font-bold tracking-wider">
-                <AlertCircle className="w-2.5 h-2.5" />
-                T-{tracksUntilJingle} próxima vinheta/locução
-              </div>
-            ) : null}
           </div>
 
           {/* Grade Comercial Ativa (Modo por Tempo) */}

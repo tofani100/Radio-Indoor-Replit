@@ -2039,7 +2039,7 @@ export async function handleStandaloneRequest(
           id: l.id,
           mediaTitle: m?.title || l.mediaTitle || "Mídia",
           mediaType: (l.mediaType || m?.type || "music") as "music" | "jingle" | "voiceover",
-          clientEmail: l.clientEmail || c?.contactEmail || c?.name || "cliente@radio.com",
+          clientEmail: l.clientEmail || c?.email || c?.masterEmail || c?.name || "cliente@radio.com",
           deviceUuid: l.deviceUuid || "terminal-web",
           playedAt: l.playedAt || new Date().toISOString(),
         };
