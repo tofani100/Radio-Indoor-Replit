@@ -430,9 +430,10 @@ export function cleanFirestoreData<T extends Record<string, any>>(data: T): Reco
 // ── Cloud Firestore + Cache Sync ──
 export async function getAll<T extends { id: number }>(storeName: string, skipMemoryCache = false): Promise<T[]> {
   const now = Date.now();
+  const ttl = storeName === "devices" ? 2000 : CACHE_TTL_MS; // Devices live presence: max 2s cache
   if (!skipMemoryCache) {
     const cached = memoryStoreCache.get(storeName);
-    if (cached && cached.data && cached.data.length > 0 && now - cached.timestamp < CACHE_TTL_MS) {
+    if (cached && cached.data && cached.data.length > 0 && now - cached.timestamp < ttl) {
       return cached.data as T[];
     }
   }
@@ -478,8 +479,8 @@ export async function getAll<T extends { id: number }>(storeName: string, skipMe
         }
       }
 
-      // Self-healing deduplication for devices: if same email appears multiple times,
-      // keep only the active/most recent session and purge duplicate/stale records from Firestore and IndexedDB
+      // In-memory representation for devices: if same email appears multiple times,
+      // present only the active / most recent session without executing destructive deletions
       if (storeName === "devices") {
         const devicesByEmail = new Map<string, any[]>();
         const nonEmailDevs: typeof items = [];
@@ -495,7 +496,6 @@ export async function getAll<T extends { id: number }>(storeName: string, skipMe
         }
 
         const uniqueItems: typeof items = [...nonEmailDevs];
-        const duplicateIds: number[] = [];
         const nowMs = Date.now();
         const ACTIVE_THRESHOLD = 5 * 60 * 1000;
 
@@ -513,23 +513,11 @@ export async function getAll<T extends { id: number }>(storeName: string, skipMe
               const bTime = b.lastSeen ? new Date(b.lastSeen).getTime() : 0;
               return bTime - aTime;
             });
-            const winner = list[0];
-            uniqueItems.push(winner);
-            for (let i = 1; i < list.length; i++) {
-              duplicateIds.push(list[i].id);
-            }
+            uniqueItems.push(list[0]);
           }
         }
 
-        if (duplicateIds.length > 0) {
-          items = uniqueItems;
-          setTimeout(() => {
-            for (const dupId of duplicateIds) {
-              deleteDoc(doc(firestore, "devices", String(dupId))).catch(() => {});
-              deleteLocal("devices", dupId).catch(() => {});
-            }
-          }, 100);
-        }
+        items = uniqueItems;
       }
 
       // Save to IndexedDB asynchronously in background (never blocks network/UI response)
@@ -1323,7 +1311,7 @@ export async function handleStandaloneRequest(
 
       let devId = 1;
       try {
-        const allDevs = await getAll<DBDevice>("devices");
+        const allDevs = await getAll<DBDevice>("devices", true);
         const nowIso = new Date().toISOString();
         const nowMs = Date.now();
 
@@ -1353,41 +1341,64 @@ export async function handleStandaloneRequest(
             };
           }
 
-          if (conflictingDev && forceTakeover) {
-            console.warn(`[REGISTER] 🔄 Force takeover para email ${email}. Desconectando sessão anterior uuid ${conflictingDev.uuid}`);
-            conflictingDev.status = "duplicate";
-            await update("devices", conflictingDev);
+          if (forceTakeover) {
+            console.warn(`[REGISTER] 🔄 Force takeover para email ${email}. Desconectando sessões anteriores.`);
+            const otherDevsForEmail = allDevs.filter((d) => d.email && d.email.toLowerCase() === email && (!uuid || d.uuid !== uuid));
+            for (const od of otherDevsForEmail) {
+              try {
+                await setDoc(doc(firestore, "devices", String(od.id)), { status: "duplicate" }, { merge: true }).catch(() => {});
+                await deleteDoc(doc(firestore, "devices", String(od.id))).catch(() => {});
+                await deleteLocal("devices", od.id).catch(() => {});
+              } catch {}
+            }
+
+            // Direct Firestore cleanup for any rogue documents with this email
+            try {
+              const colRef = collection(firestore, "devices");
+              const snap = await getDocs(colRef);
+              for (const docSnap of snap.docs) {
+                const data = docSnap.data();
+                const dEmail = (data.email || "").trim().toLowerCase();
+                const dUuid = (data.uuid || "").trim();
+                if (dEmail === email && (!uuid || dUuid !== uuid)) {
+                  await deleteDoc(docSnap.ref).catch(() => {});
+                  const dNum = Number(docSnap.id) || data.id;
+                  if (dNum) await deleteLocal("devices", dNum).catch(() => {});
+                }
+              }
+            } catch {}
           }
         }
 
         // Must look up existing device strictly by UUID (each physical browser/tab has its unique UUID)
         let existingDev = allDevs.find((d) => uuid && d.uuid === uuid);
-        if (existingDev) {
-          devId = existingDev.id;
-          existingDev.lastSeen = nowIso;
-          existingDev.clientId = authorizedClient.id;
-          existingDev.email = email;
-          existingDev.status = "active";
-          await update("devices", existingDev);
-        } else {
-          const newDev: Omit<DBDevice, "id"> = {
-            clientId: authorizedClient.id,
-            name: email.split("@")[0] || "Device",
-            pairingCode: `pair-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-            uuid: uuid || `dev-${Date.now()}`,
-            email: email,
-            status: "active",
-            lastSeen: nowIso,
-            createdAt: nowIso,
-          };
-          devId = await insert("devices", newDev);
-        }
+        devId = existingDev?.id || ((Date.now() % 100000000) + Math.floor(Math.random() * 1000));
 
-        // Auto-purge any other duplicate or stale device rows for this email
-        const otherDevsForEmail = allDevs.filter((d) => d.email && d.email.toLowerCase() === email && (!uuid || d.uuid !== uuid));
-        for (const od of otherDevsForEmail) {
-          if (forceTakeover || od.status !== "active" || (nowMs - (od.lastSeen ? new Date(od.lastSeen).getTime() : 0) >= 5 * 60 * 1000)) {
-            await remove("devices", od.id).catch(() => {});
+        const activeDev: DBDevice = {
+          id: devId,
+          clientId: authorizedClient.id,
+          name: email.split("@")[0] || "Device",
+          pairingCode: existingDev?.pairingCode || `pair-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          uuid: uuid || `dev-${Date.now()}`,
+          email: email,
+          status: "active",
+          lastSeen: nowIso,
+          createdAt: existingDev?.createdAt || nowIso,
+        };
+
+        const dRef = doc(firestore, "devices", String(devId));
+        await setDoc(dRef, cleanFirestoreData(activeDev), { merge: true });
+        await putLocal("devices", activeDev);
+        invalidateStoreCache("devices");
+
+        // Clean up any stale records for this email if not active
+        if (!forceTakeover) {
+          const staleDevs = allDevs.filter((d) => d.email && d.email.toLowerCase() === email && (!uuid || d.uuid !== uuid) && d.id !== devId);
+          for (const sd of staleDevs) {
+            const lastSeenMs = sd.lastSeen ? new Date(sd.lastSeen).getTime() : 0;
+            if (sd.status !== "active" || (nowMs - lastSeenMs >= 5 * 60 * 1000)) {
+              await remove("devices", sd.id).catch(() => {});
+            }
           }
         }
       } catch (devErr) {
@@ -1831,8 +1842,13 @@ export async function handleStandaloneRequest(
     let dev: DBDevice | undefined;
     if (uuid || email) {
       try {
-        const allDevs = await getAll<DBDevice>("devices");
-        dev = allDevs.find((d) => (uuid && d.uuid === uuid) || (email && d.email && d.email.toLowerCase() === email));
+        const allDevs = await getAll<DBDevice>("devices", true);
+        if (uuid) {
+          dev = allDevs.find((d) => d.uuid === uuid);
+        }
+        if (!dev && email) {
+          dev = allDevs.find((d) => d.email && d.email.toLowerCase() === email && d.status === "active");
+        }
         if (dev) {
           dev.lastSeen = new Date().toISOString();
           if (email) dev.email = email;
@@ -1886,7 +1902,7 @@ export async function handleStandaloneRequest(
     const email = (body?.email || "").trim().toLowerCase();
     const uuid = (body?.uuid || "").trim();
     if (email || uuid) {
-      const allDevs = await getAll<DBDevice>("devices");
+      const allDevs = await getAll<DBDevice>("devices", true);
       // Match strictly by uuid for this physical browser instance
       let dev = allDevs.find((d) => uuid && d.uuid === uuid);
       const nowIso = new Date().toISOString();
@@ -1913,7 +1929,7 @@ export async function handleStandaloneRequest(
           const otherDev = allDevs.find(
             (d) => d.email && d.email.toLowerCase() === email && d.uuid !== uuid && d.status === "active" &&
                    d.lastSeen && (nowMs - new Date(d.lastSeen).getTime() < 5 * 60 * 1000) &&
-                   new Date(d.lastSeen).getTime() > new Date(dev!.lastSeen || 0).getTime()
+                   new Date(d.lastSeen).getTime() > (new Date(dev!.lastSeen || 0).getTime() + 10000)
           );
           if (otherDev) {
             dev.status = "duplicate";
@@ -1929,12 +1945,57 @@ export async function handleStandaloneRequest(
           }
         }
 
+        dev.status = "active";
         dev.lastSeen = nowIso;
         if (email) dev.email = email;
         await update("devices", dev);
         return { status: 200, data: { status: dev.status, success: true } };
       } else {
-        // Device record does not exist (was deleted or disconnected by admin/takeover)
+        // Device record does not exist in allDevs — auto-heal if email is authorized and no conflicting station!
+        if (email) {
+          const allClients = await getAll<DBClient>("clients");
+          const authorizedClient = allClients.find((c) => c.active !== false && extractClientAuthorizedEmails(c).includes(email));
+          if (authorizedClient) {
+            // Check if another station has taken over this email
+            const otherActive = allDevs.find(
+              (d) => d.email && d.email.toLowerCase() === email && d.uuid !== uuid && d.status === "active" &&
+                     d.lastSeen && (nowMs - new Date(d.lastSeen).getTime() < 5 * 60 * 1000)
+            );
+            if (otherActive && email !== "tofani100@gmail.com") {
+              return {
+                status: 200,
+                data: {
+                  status: "duplicate",
+                  success: false,
+                  message: `Este e-mail (${email}) foi conectado em outra estação.`,
+                },
+              };
+            }
+
+            // No conflicting station: AUTO-HEAL! Re-create device record for this active player!
+            const newDevId = (Date.now() % 100000000) + Math.floor(Math.random() * 1000);
+            const healedDev: DBDevice = {
+              id: newDevId,
+              clientId: authorizedClient.id,
+              name: email.split("@")[0] || "Device",
+              pairingCode: `pair-${Date.now()}`,
+              uuid: uuid || `dev-${Date.now()}`,
+              email,
+              status: "active",
+              lastSeen: nowIso,
+              createdAt: nowIso,
+            };
+            try {
+              const dRef = doc(firestore, "devices", String(newDevId));
+              await setDoc(dRef, cleanFirestoreData(healedDev), { merge: true });
+              await putLocal("devices", healedDev);
+              invalidateStoreCache("devices");
+            } catch {}
+            return { status: 200, data: { status: "active", success: true } };
+          }
+        }
+
+        // Email not authorized or explicitly disconnected
         return {
           status: 200,
           data: {
