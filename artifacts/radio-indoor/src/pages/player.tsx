@@ -270,11 +270,58 @@ export default function PlayerPage() {
   useEffect(() => {
     const data = register.data;
     if (!data) return;
-    if (data.status === "active") setPlayerState("active");
-    else if (data.status === "blocked") setPlayerState("blocked");
-    else if (data.status === "duplicate") setPlayerState("duplicate");
-    else setPlayerState("pending");
-  }, [register.data]);
+    if (data.status === "active") {
+      setPlayerState("active");
+      if (typeof window !== "undefined" && "BroadcastChannel" in window && email) {
+        try {
+          const channel = new BroadcastChannel("radio_indoor_player_session");
+          channel.postMessage({
+            type: "SESSION_CLAIMED",
+            email: email.trim().toLowerCase(),
+            uuid,
+            timestamp: Date.now(),
+          });
+          channel.close();
+        } catch {}
+      }
+    } else if (data.status === "blocked") {
+      setPlayerState("blocked");
+    } else if (data.status === "duplicate") {
+      setPlayerState("duplicate");
+    } else {
+      setPlayerState("pending");
+    }
+  }, [register.data, email, uuid]);
+
+  // Instant multi-tab session coordination across open tabs in the same browser
+  useEffect(() => {
+    if (typeof window === "undefined" || !("BroadcastChannel" in window)) return;
+    const channel = new BroadcastChannel("radio_indoor_player_session");
+
+    channel.onmessage = (event) => {
+      const data = event.data;
+      if (!data) return;
+
+      if (
+        data.type === "SESSION_CLAIMED" &&
+        data.email &&
+        email &&
+        data.email.trim().toLowerCase() === email.trim().toLowerCase() &&
+        data.uuid !== uuid
+      ) {
+        console.warn("[BroadcastChannel] Outra aba assumiu a transmissão. Desconectando sessão local imediatamente.");
+        setPlayerState("duplicate");
+        if (audioRef.current) {
+          try { audioRef.current.pause(); } catch {}
+        }
+        setIsPlaying(false);
+      }
+    };
+
+    return () => {
+      channel.close();
+    };
+  }, [email, uuid]);
 
   const heartbeat = useDeviceHeartbeat({ mutation: {} });
   const logPlayback = useLogPlayback({ mutation: {} });

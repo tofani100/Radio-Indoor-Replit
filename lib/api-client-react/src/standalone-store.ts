@@ -479,47 +479,6 @@ export async function getAll<T extends { id: number }>(storeName: string, skipMe
         }
       }
 
-      // In-memory representation for devices: if same email appears multiple times,
-      // present only the active / most recent session without executing destructive deletions
-      if (storeName === "devices") {
-        const devicesByEmail = new Map<string, any[]>();
-        const nonEmailDevs: typeof items = [];
-        for (const it of items as any[]) {
-          const em = (it.email || "").trim().toLowerCase();
-          if (!em) {
-            nonEmailDevs.push(it);
-          } else {
-            const list = devicesByEmail.get(em) || [];
-            list.push(it);
-            devicesByEmail.set(em, list);
-          }
-        }
-
-        const uniqueItems: typeof items = [...nonEmailDevs];
-        const nowMs = Date.now();
-        const ACTIVE_THRESHOLD = 5 * 60 * 1000;
-
-        for (const [, list] of devicesByEmail.entries()) {
-          if (list.length === 1) {
-            uniqueItems.push(list[0]);
-          } else {
-            // Sort: online/active first, newest lastSeen first
-            list.sort((a, b) => {
-              const aOnline = a.status === "active" && a.lastSeen && (nowMs - new Date(a.lastSeen).getTime() < ACTIVE_THRESHOLD);
-              const bOnline = b.status === "active" && b.lastSeen && (nowMs - new Date(b.lastSeen).getTime() < ACTIVE_THRESHOLD);
-              if (aOnline && !bOnline) return -1;
-              if (!aOnline && bOnline) return 1;
-              const aTime = a.lastSeen ? new Date(a.lastSeen).getTime() : 0;
-              const bTime = b.lastSeen ? new Date(b.lastSeen).getTime() : 0;
-              return bTime - aTime;
-            });
-            uniqueItems.push(list[0]);
-          }
-        }
-
-        items = uniqueItems;
-      }
-
       // Save to IndexedDB asynchronously in background (never blocks network/UI response)
       putLocalBatch(storeName, items).catch(() => {});
 
@@ -1342,17 +1301,7 @@ export async function handleStandaloneRequest(
           }
 
           if (forceTakeover) {
-            console.warn(`[REGISTER] 🔄 Force takeover para email ${email}. Desconectando sessões anteriores.`);
-            const otherDevsForEmail = allDevs.filter((d) => d.email && d.email.toLowerCase() === email && (!uuid || d.uuid !== uuid));
-            for (const od of otherDevsForEmail) {
-              try {
-                await setDoc(doc(firestore, "devices", String(od.id)), { status: "duplicate" }, { merge: true }).catch(() => {});
-                await deleteDoc(doc(firestore, "devices", String(od.id))).catch(() => {});
-                await deleteLocal("devices", od.id).catch(() => {});
-              } catch {}
-            }
-
-            // Direct Firestore cleanup for any rogue documents with this email
+            console.warn(`[REGISTER] 🔄 Force takeover para email ${email}. Marcando sessões anteriores como duplicadas.`);
             try {
               const colRef = collection(firestore, "devices");
               const snap = await getDocs(colRef);
@@ -1361,12 +1310,18 @@ export async function handleStandaloneRequest(
                 const dEmail = (data.email || "").trim().toLowerCase();
                 const dUuid = (data.uuid || "").trim();
                 if (dEmail === email && (!uuid || dUuid !== uuid)) {
-                  await deleteDoc(docSnap.ref).catch(() => {});
+                  // Mark as duplicate so superseded browser tab receives status: "duplicate",
+                  // pauses audio and permanently clears its heartbeat interval!
+                  await setDoc(docSnap.ref, { status: "duplicate", lastSeen: nowIso }, { merge: true }).catch(() => {});
                   const dNum = Number(docSnap.id) || data.id;
-                  if (dNum) await deleteLocal("devices", dNum).catch(() => {});
+                  if (dNum) {
+                    await putLocal("devices", { ...data, id: dNum, status: "duplicate", lastSeen: nowIso }).catch(() => {});
+                  }
                 }
               }
-            } catch {}
+            } catch (ftErr) {
+              console.warn("[REGISTER] Force takeover update error:", ftErr);
+            }
           }
         }
 
@@ -1391,12 +1346,12 @@ export async function handleStandaloneRequest(
         await putLocal("devices", activeDev);
         invalidateStoreCache("devices");
 
-        // Clean up any stale records for this email if not active
+        // Clean up any ancient stale records for this email if not active (> 15 min)
         if (!forceTakeover) {
           const staleDevs = allDevs.filter((d) => d.email && d.email.toLowerCase() === email && (!uuid || d.uuid !== uuid) && d.id !== devId);
           for (const sd of staleDevs) {
             const lastSeenMs = sd.lastSeen ? new Date(sd.lastSeen).getTime() : 0;
-            if (sd.status !== "active" || (nowMs - lastSeenMs >= 5 * 60 * 1000)) {
+            if (sd.status !== "active" && (nowMs - lastSeenMs >= 15 * 60 * 1000)) {
               await remove("devices", sd.id).catch(() => {});
             }
           }
@@ -1951,51 +1906,26 @@ export async function handleStandaloneRequest(
         await update("devices", dev);
         return { status: 200, data: { status: dev.status, success: true } };
       } else {
-        // Device record does not exist in allDevs — auto-heal if email is authorized and no conflicting station!
+        // Device record does not exist in allDevs
         if (email) {
-          const allClients = await getAll<DBClient>("clients");
-          const authorizedClient = allClients.find((c) => c.active !== false && extractClientAuthorizedEmails(c).includes(email));
-          if (authorizedClient) {
-            // Check if another station has taken over this email
-            const otherActive = allDevs.find(
-              (d) => d.email && d.email.toLowerCase() === email && d.uuid !== uuid && d.status === "active" &&
-                     d.lastSeen && (nowMs - new Date(d.lastSeen).getTime() < 5 * 60 * 1000)
-            );
-            if (otherActive && email !== "tofani100@gmail.com") {
-              return {
-                status: 200,
-                data: {
-                  status: "duplicate",
-                  success: false,
-                  message: `Este e-mail (${email}) foi conectado em outra estação.`,
-                },
-              };
-            }
-
-            // No conflicting station: AUTO-HEAL! Re-create device record for this active player!
-            const newDevId = (Date.now() % 100000000) + Math.floor(Math.random() * 1000);
-            const healedDev: DBDevice = {
-              id: newDevId,
-              clientId: authorizedClient.id,
-              name: email.split("@")[0] || "Device",
-              pairingCode: `pair-${Date.now()}`,
-              uuid: uuid || `dev-${Date.now()}`,
-              email,
-              status: "active",
-              lastSeen: nowIso,
-              createdAt: nowIso,
+          // Check if another station has taken over or is active for this email
+          const otherActive = allDevs.find(
+            (d) => d.email && d.email.toLowerCase() === email && d.uuid !== uuid && d.status === "active" &&
+                   d.lastSeen && (nowMs - new Date(d.lastSeen).getTime() < 5 * 60 * 1000)
+          );
+          if (otherActive && email !== "tofani100@gmail.com") {
+            return {
+              status: 200,
+              data: {
+                status: "duplicate",
+                success: false,
+                message: `Este e-mail (${email}) foi conectado em outra estação.`,
+              },
             };
-            try {
-              const dRef = doc(firestore, "devices", String(newDevId));
-              await setDoc(dRef, cleanFirestoreData(healedDev), { merge: true });
-              await putLocal("devices", healedDev);
-              invalidateStoreCache("devices");
-            } catch {}
-            return { status: 200, data: { status: "active", success: true } };
           }
         }
 
-        // Email not authorized or explicitly disconnected
+        // Terminal was disconnected or device record was deleted
         return {
           status: 200,
           data: {

@@ -9,8 +9,8 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 
-export const APP_PROD_VERSION = "V55";
-export const APP_DEV_VERSION = "Dev-V55";
+export const APP_PROD_VERSION = "V56";
+export const APP_DEV_VERSION = "Dev-V56";
 export const isDev = isDevEnvironment();
 export const APP_VERSION = isDev ? APP_DEV_VERSION : APP_PROD_VERSION;
 
