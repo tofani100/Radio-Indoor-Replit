@@ -20,6 +20,7 @@ import {
   useDeleteDevice,
   handleStandaloneRequest,
   customFetch,
+  extractClientAuthorizedEmails,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -219,6 +220,13 @@ export default function DevicesPage() {
       for (const dev of clientDevices) {
         if (!dev.email) continue;
         const cleanEmail = dev.email.trim().toLowerCase();
+
+        // Safeguard: If another client is the authorized owner of this email, do not attribute it here
+        const otherOwner = clients.find((c) => c.id !== client.id && extractClientAuthorizedEmails(c).includes(cleanEmail));
+        if (otherOwner) {
+          continue;
+        }
+
         const key = `${client.id}:${cleanEmail}`;
         if (!seenEmails.has(key)) {
           seenEmails.add(key);

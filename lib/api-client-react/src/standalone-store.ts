@@ -1231,31 +1231,12 @@ export async function handleStandaloneRequest(
     const activeClients = clients.filter((c) => c.active !== false);
     console.warn("[REGISTER] Clientes ativos (active !== false):", activeClients.length);
 
-    // Bulletproof matching — check every possible field, normalize everything
+    // Bulletproof matching — check every possible field via extractClientAuthorizedEmails
     let authorizedClient: DBClient | undefined;
     for (const c of activeClients) {
-      // Collect ALL emails from ALL fields
-      const allEmails: string[] = [];
-
-      // 1. authorizedEmails array
-      if (Array.isArray(c.authorizedEmails)) {
-        for (const e of c.authorizedEmails) {
-          if (e && typeof e === "string") allEmails.push(e.trim().toLowerCase());
-        }
-      }
-
-      // 2. masterEmail
-      if (c.masterEmail && typeof c.masterEmail === "string") {
-        allEmails.push(c.masterEmail.trim().toLowerCase());
-      }
-
-      // 3. email (login email)
-      if (c.email && typeof c.email === "string") {
-        allEmails.push(c.email.trim().toLowerCase());
-      }
-
-      const match = allEmails.includes(email);
-      console.warn(`[REGISTER] Testando "${c.name}": [${allEmails.join(", ")}] → ${match ? "✅ MATCH" : "❌ sem match"}`);
+      const authorizedEmails = extractClientAuthorizedEmails(c);
+      const match = authorizedEmails.includes(email);
+      console.warn(`[REGISTER] Testando "${c.name}": [${authorizedEmails.join(", ")}] → ${match ? "✅ MATCH" : "❌ sem match"}`);
 
       if (match) {
         authorizedClient = c;
