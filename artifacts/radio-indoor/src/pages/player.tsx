@@ -28,11 +28,30 @@ function shuffleArray<T>(array: T[]): T[] {
 }
 
 function getOrCreateUUID(): string {
-  let uuid = localStorage.getItem("radio_indoor_uuid");
+  // Use sessionStorage combined with window.name to isolate UUID per browser tab.
+  // This guarantees that opening multiple tabs in the same browser generates distinct UUIDs,
+  // preventing unauthorized simultaneous multi-tab streaming on the same account.
+  // Page reloads (F5) within the same tab preserve both window.name and sessionStorage,
+  // keeping the same UUID so reloads do not trigger duplicate session errors.
+  if (typeof window === "undefined") return crypto.randomUUID();
+
+  // If window.name doesn't match our tab instance pattern, it's a new or duplicated tab
+  let tabId = window.name;
+  if (!tabId || !tabId.startsWith("radio_tab_")) {
+    tabId = `radio_tab_${crypto.randomUUID()}`;
+    window.name = tabId;
+    const newUuid = crypto.randomUUID();
+    sessionStorage.setItem("radio_indoor_tab_uuid", newUuid);
+    localStorage.removeItem("radio_indoor_uuid"); // clean up legacy shared UUID
+    return newUuid;
+  }
+
+  let uuid = sessionStorage.getItem("radio_indoor_tab_uuid");
   if (!uuid) {
     uuid = crypto.randomUUID();
-    localStorage.setItem("radio_indoor_uuid", uuid);
+    sessionStorage.setItem("radio_indoor_tab_uuid", uuid);
   }
+  localStorage.removeItem("radio_indoor_uuid"); // clean up legacy shared UUID
   return uuid;
 }
 
@@ -43,6 +62,10 @@ function clearStoredEmail() { localStorage.removeItem("radio_indoor_email"); }
 function clearDeviceIdentity() {
   localStorage.removeItem("radio_indoor_email");
   localStorage.removeItem("radio_indoor_uuid");
+  if (typeof window !== "undefined") {
+    sessionStorage.removeItem("radio_indoor_tab_uuid");
+    window.name = "";
+  }
 }
 
 async function disconnectAndClearDevice(targetUuid?: string, targetEmail?: string) {
@@ -572,7 +595,7 @@ export default function PlayerPage() {
     return (scheduledItems || []).filter((i) => i.type === "jingle" || i.type === "voiceover").length;
   }, [scheduledItems, queue?.jingleMode, jinglesPool]);
 
-  // Heartbeat every 30 seconds to maintain reliable presence and avoid duplicate session conflicts
+  // Heartbeat every 15 seconds to maintain reliable presence and rapid duplicate session detection
   useEffect(() => {
     if (playerState !== "active" || !email) return;
     heartbeat.mutate({ data: { uuid, email } });
@@ -608,7 +631,7 @@ export default function PlayerPage() {
           },
         }
       );
-    }, 30 * 1000);
+    }, 15 * 1000);
     return () => clearInterval(id);
   }, [playerState, email, uuid]);
 

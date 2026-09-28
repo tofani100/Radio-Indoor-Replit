@@ -1259,7 +1259,7 @@ export async function handleStandaloneRequest(
 
         // Check if there is another ACTIVE station/browser session for this non-master email
         if (!isMasterEmail) {
-          const ACTIVE_SESSION_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes window matching production isOnline()
+          const ACTIVE_SESSION_THRESHOLD_MS = 45 * 1000; // 45s threshold (heartbeats run every 15s)
           const conflictingDev = allDevs.find((d) => {
             if (!d.email || d.email.toLowerCase() !== email) return false;
             if (uuid && d.uuid === uuid) return false; // same browser tab/device instance
@@ -1409,10 +1409,12 @@ export async function handleStandaloneRequest(
       } catch (cloudErr) {
         console.warn("[DISCONNECT] Cloud cleanup error (non-fatal):", cloudErr);
       }
+      invalidateStoreCache("devices");
     } catch (err) {
       console.error("[DISCONNECT] Erro ao desconectar dispositivo:", err);
     }
 
+    invalidateStoreCache("devices");
     return {
       status: 200,
       data: { success: true, message: "Dispositivo desconectado e liberado com sucesso" },
@@ -1864,7 +1866,7 @@ export async function handleStandaloneRequest(
         if (email && email !== "tofani100@gmail.com") {
           const otherDev = allDevs.find(
             (d) => d.email && d.email.toLowerCase() === email && d.uuid !== uuid && d.status === "active" &&
-                   d.lastSeen && (nowMs - new Date(d.lastSeen).getTime() < 5 * 60 * 1000) &&
+                   d.lastSeen && (nowMs - new Date(d.lastSeen).getTime() < 45 * 1000) &&
                    new Date(d.lastSeen).getTime() > (new Date(dev!.lastSeen || 0).getTime() + 10000)
           );
           if (otherDev) {
@@ -1892,7 +1894,7 @@ export async function handleStandaloneRequest(
           // Check if another station has taken over or is active for this email
           const otherActive = allDevs.find(
             (d) => d.email && d.email.toLowerCase() === email && d.uuid !== uuid && d.status === "active" &&
-                   d.lastSeen && (nowMs - new Date(d.lastSeen).getTime() < 5 * 60 * 1000)
+                   d.lastSeen && (nowMs - new Date(d.lastSeen).getTime() < 45 * 1000)
           );
           if (otherActive && email !== "tofani100@gmail.com") {
             return {
@@ -1931,7 +1933,7 @@ export async function handleStandaloneRequest(
     const activeDevices = devices.filter((d) => d.status === "active").length;
     const pendingDevices = devices.filter((d) => d.status === "pending").length;
     const now = Date.now();
-    const onlineDevices = devices.filter((d) => d.lastSeen && (now - new Date(d.lastSeen).getTime() < 5 * 60 * 1000)).length;
+    const onlineDevices = devices.filter((d) => d.lastSeen && (now - new Date(d.lastSeen).getTime() < 45 * 1000)).length;
     const offlineDevices = devices.length - onlineDevices;
 
     const todayStr = new Date().toISOString().split("T")[0];
@@ -1960,7 +1962,7 @@ export async function handleStandaloneRequest(
     const now = Date.now();
     const overview = devices.map((d) => {
       const client = clients.find((c) => c.id === d.clientId);
-      const isOnline = d.lastSeen ? (now - new Date(d.lastSeen).getTime() < 5 * 60 * 1000) : false;
+      const isOnline = d.lastSeen ? (now - new Date(d.lastSeen).getTime() < 45 * 1000) : false;
       return {
         id: d.id,
         name: d.name,
@@ -2646,7 +2648,7 @@ export async function handleStandaloneRequest(
     const filtered = clientIdParam ? devices.filter((d) => d.clientId === parseInt(clientIdParam)) : devices;
     const enriched = filtered.map((d) => {
       const client = clients.find((c) => c.id === d.clientId);
-      const isOnline = d.lastSeen ? (Date.now() - new Date(d.lastSeen).getTime() < 5 * 60 * 1000) : false;
+      const isOnline = d.lastSeen ? (Date.now() - new Date(d.lastSeen).getTime() < 45 * 1000) : false;
       return {
         ...d,
         clientName: client?.name ?? "–",

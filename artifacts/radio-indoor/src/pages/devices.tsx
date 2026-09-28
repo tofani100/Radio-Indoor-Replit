@@ -83,7 +83,7 @@ export default function DevicesPage() {
     {
       query: {
         queryKey: getListDevicesQueryKey({}),
-        refetchInterval: 10000, // 10s auto-refresh
+        refetchInterval: 3000, // 3s auto-refresh for instant status feedback
       },
     }
   );
@@ -124,7 +124,7 @@ export default function DevicesPage() {
         const matches = clientDevices.filter((d) => d.email?.trim().toLowerCase() === cleanEmail);
         if (matches.length === 0) return null;
         const nowMs = Date.now();
-        const ACTIVE_THRESHOLD = 5 * 60 * 1000;
+        const ACTIVE_THRESHOLD = 45 * 1000; // 45 seconds (heartbeats run every 15s)
         return matches.sort((a, b) => {
           const aOnline = (a as any).isOnline ?? (a.status === "active" && a.lastSeen ? nowMs - new Date(a.lastSeen).getTime() < ACTIVE_THRESHOLD : false);
           const bOnline = (b as any).isOnline ?? (b.status === "active" && b.lastSeen ? nowMs - new Date(b.lastSeen).getTime() < ACTIVE_THRESHOLD : false);
@@ -136,6 +136,8 @@ export default function DevicesPage() {
         })[0];
       };
 
+      const ACTIVE_THRESHOLD = 45 * 1000;
+
       // 1. Master Email
       if (client.masterEmail) {
         const cleanEmail = client.masterEmail.trim().toLowerCase();
@@ -145,7 +147,7 @@ export default function DevicesPage() {
           const dev = getBestDevice(cleanEmail);
           const isOnline = dev
             ? (dev as any).isOnline ??
-              (dev.status === "active" && dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < 5 * 60 * 1000 : false)
+              (dev.status === "active" && dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < ACTIVE_THRESHOLD : false)
             : false;
           entries.push({
             id: `master-${client.id}-${cleanEmail}`,
@@ -173,7 +175,7 @@ export default function DevicesPage() {
           const dev = getBestDevice(cleanEmail);
           const isOnline = dev
             ? (dev as any).isOnline ??
-              (dev.status === "active" && dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < 5 * 60 * 1000 : false)
+              (dev.status === "active" && dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < ACTIVE_THRESHOLD : false)
             : false;
           entries.push({
             id: `auth-${client.id}-${cleanEmail}`,
@@ -199,7 +201,7 @@ export default function DevicesPage() {
           const dev = getBestDevice(cleanEmail);
           const isOnline = dev
             ? (dev as any).isOnline ??
-              (dev.status === "active" && dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < 5 * 60 * 1000 : false)
+              (dev.status === "active" && dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < ACTIVE_THRESHOLD : false)
             : false;
           entries.push({
             id: `login-${client.id}-${cleanEmail}`,
@@ -232,7 +234,7 @@ export default function DevicesPage() {
           seenEmails.add(key);
           const isOnline =
             (dev as any).isOnline ??
-            (dev.status === "active" && dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < 5 * 60 * 1000 : false);
+            (dev.status === "active" && dev.lastSeen ? Date.now() - new Date(dev.lastSeen).getTime() < ACTIVE_THRESHOLD : false);
           entries.push({
             id: `dev-${dev.id}-${cleanEmail}`,
             email: dev.email,
