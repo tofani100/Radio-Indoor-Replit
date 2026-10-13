@@ -130,41 +130,6 @@ function setStoredCommercialPlaylistIdForEmail(email: string, id: number) {
 
 type PlayerState = "gate" | "pending" | "duplicate" | "blocked" | "active";
 
-class SilentAudioKeepalive {
-  private audio: HTMLAudioElement | null = null;
-  private isRunning = false;
-
-  start() {
-    if (this.isRunning) return;
-    try {
-      if (typeof window === "undefined") return;
-      if (!this.audio) {
-        this.audio = new Audio("/silence.mp3");
-        this.audio.loop = true;
-        this.audio.volume = 0.001; // Inaudível, mas mantém ativo o canal de áudio e a sessão de mídia no SO
-        this.audio.preload = "auto";
-      }
-      this.audio.play().then(() => {
-        this.isRunning = true;
-      }).catch((e) => {
-        console.warn("[Keepalive] Audio keepalive play pendente:", e);
-      });
-    } catch (e) {
-      console.warn("[Keepalive] Falha ao iniciar áudio silencioso:", e);
-    }
-  }
-
-  stop() {
-    if (!this.isRunning && !this.audio) return;
-    try {
-      if (this.audio) {
-        this.audio.pause();
-        this.audio.currentTime = 0;
-      }
-    } catch {}
-    this.isRunning = false;
-  }
-}
 
 export default function PlayerPage() {
   const uuid = getOrCreateUUID();
@@ -234,7 +199,6 @@ export default function PlayerPage() {
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const wakeLock = useWakeLock(isPlaying);
-  const silentKeepaliveRef = useRef(new SilentAudioKeepalive());
   const lastHeartbeatTimeRef = useRef(Date.now());
   const isPlayingRef = useRef(false);
   const onTrackEndedRef = useRef<() => void>(() => {});
@@ -247,7 +211,6 @@ export default function PlayerPage() {
     if (!audioRef.current) {
       const audio = new Audio();
       audio.preload = "auto";
-      audio.crossOrigin = "anonymous";
 
       audio.addEventListener("timeupdate", () => {
         if (Number.isFinite(audio.currentTime)) {
@@ -310,11 +273,6 @@ export default function PlayerPage() {
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
 
-  useEffect(() => {
-    return () => {
-      silentKeepaliveRef.current.stop();
-    };
-  }, []);
 
   const skipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const consecutiveErrorsRef = useRef(0);
@@ -723,21 +681,18 @@ export default function PlayerPage() {
         try { audioRef.current.pause(); } catch {}
       }
       setIsPlaying(false);
-      silentKeepaliveRef.current.stop();
     } else if (res?.status === "blocked") {
       setPlayerState("blocked");
       if (audioRef.current) {
         try { audioRef.current.pause(); } catch {}
       }
       setIsPlaying(false);
-      silentKeepaliveRef.current.stop();
     } else if (res?.status === "disconnected" || (res?.success === false && res?.status !== "active")) {
       setPlayerState("gate");
       if (audioRef.current) {
         try { audioRef.current.pause(); } catch {}
       }
       setIsPlaying(false);
-      silentKeepaliveRef.current.stop();
       toast({
         title: "Terminal desconectado",
         description: "Sua conexão foi liberada ou desconectada pelo painel administrativo.",
@@ -805,7 +760,6 @@ export default function PlayerPage() {
 
         navigator.mediaSession.setActionHandler("play", () => {
           const a = getOrCreateAudio();
-          silentKeepaliveRef.current.start();
           a.play().catch(() => {});
           setIsPlaying(true);
           isPlayingRef.current = true;
@@ -818,7 +772,6 @@ export default function PlayerPage() {
           a.pause();
           setIsPlaying(false);
           isPlayingRef.current = false;
-          silentKeepaliveRef.current.stop();
           if ("mediaSession" in navigator) {
             navigator.mediaSession.playbackState = "paused";
           }
@@ -867,7 +820,7 @@ export default function PlayerPage() {
   }, [duration, Math.floor(currentTime)]);
 
   // Sincronizador contínuo de progresso (a cada 250ms enquanto tocando)
-  // Garante que barra e contador avancem continuamente mesmo se o navegador móvel suprimir eventos timeupdate
+  // Garante que barra e contador avancem continuamente
   useEffect(() => {
     if (!isPlaying) return;
     const ticker = setInterval(() => {
@@ -875,16 +828,11 @@ export default function PlayerPage() {
       if (a && !a.paused && Number.isFinite(a.currentTime)) {
         setCurrentTime(a.currentTime);
         if (Number.isFinite(a.duration) && a.duration > 0) {
-          setDuration((prev) => (prev > 0 ? prev : a.duration));
+          setDuration(a.duration);
         }
         if (a.currentTime > 0.1 && isBufferingRef.current) {
           setIsBuffering(false);
           isBufferingRef.current = false;
-        }
-        // Salvaguarda caso a faixa termine enquanto bloqueado
-        if (a.duration > 0 && a.currentTime >= a.duration - 0.25 && !hasEndedHandledRef.current) {
-          hasEndedHandledRef.current = true;
-          onTrackEndedRef.current();
         }
       }
     }, 250);
@@ -940,7 +888,6 @@ export default function PlayerPage() {
     setStarted(true);
     setIsPlaying(true);
     isPlayingRef.current = true;
-    silentKeepaliveRef.current.start();
     playTrack(currentIdx);
   };
 
@@ -975,7 +922,6 @@ export default function PlayerPage() {
 
     // Reaproveita o elemento de áudio persistente único desbloqueado pelo usuário
     const audio = getOrCreateAudio();
-    silentKeepaliveRef.current.start();
 
     const vol = effectiveVolume(track.type);
     audio.volume = vol;
@@ -1054,8 +1000,6 @@ export default function PlayerPage() {
 
     setIsBuffering(true);
     isBufferingRef.current = true;
-
-    silentKeepaliveRef.current.start();
 
     const vol = effectiveVolume(jingle.type || "voiceover");
     audio.volume = vol;
@@ -1271,12 +1215,10 @@ export default function PlayerPage() {
       a.pause();
       setIsPlaying(false);
       isPlayingRef.current = false;
-      silentKeepaliveRef.current.stop();
       if ("mediaSession" in navigator) {
         navigator.mediaSession.playbackState = "paused";
       }
     } else {
-      silentKeepaliveRef.current.start();
       a.play().catch((err) => {
         console.error("Erro ao retomar áudio:", err);
       });
@@ -1652,7 +1594,6 @@ export default function PlayerPage() {
       try { audioRef.current.pause(); } catch { /* ignore */ }
       audioRef.current.src = "";
     }
-    silentKeepaliveRef.current.stop();
     if ("mediaSession" in navigator) {
       navigator.mediaSession.playbackState = "paused";
     }
