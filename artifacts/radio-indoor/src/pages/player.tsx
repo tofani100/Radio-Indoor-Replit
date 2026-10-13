@@ -131,51 +131,35 @@ function setStoredCommercialPlaylistIdForEmail(email: string, id: number) {
 type PlayerState = "gate" | "pending" | "duplicate" | "blocked" | "active";
 
 class SilentAudioKeepalive {
-  private ctx: AudioContext | null = null;
-  private oscillator: OscillatorNode | null = null;
+  private audio: HTMLAudioElement | null = null;
   private isRunning = false;
 
   start() {
     if (this.isRunning) return;
     try {
-      const AudioContextClass = typeof window !== "undefined"
-        ? (window.AudioContext || (window as any).webkitAudioContext)
-        : null;
-      if (!AudioContextClass) return;
-
-      if (!this.ctx || this.ctx.state === "closed") {
-        this.ctx = new AudioContextClass();
+      if (typeof window === "undefined") return;
+      if (!this.audio) {
+        this.audio = new Audio("/silence.mp3");
+        this.audio.loop = true;
+        this.audio.volume = 0.001; // Inaudível, mas mantém ativo o canal de áudio e a sessão de mídia no SO
+        this.audio.preload = "auto";
       }
-      if (this.ctx.state === "suspended") {
-        this.ctx.resume().catch(() => {});
-      }
-
-      const gainNode = this.ctx.createGain();
-      gainNode.gain.value = 0.00001; // Inaudível para o ouvido humano, mas mantém ativo o subsistema de áudio no SO
-      gainNode.connect(this.ctx.destination);
-
-      const osc = this.ctx.createOscillator();
-      osc.frequency.value = 20;
-      osc.connect(gainNode);
-      osc.start();
-      this.oscillator = osc;
-      this.isRunning = true;
+      this.audio.play().then(() => {
+        this.isRunning = true;
+      }).catch((e) => {
+        console.warn("[Keepalive] Audio keepalive play pendente:", e);
+      });
     } catch (e) {
-      console.warn("[Keepalive] Não foi possível iniciar AudioContext silencioso:", e);
+      console.warn("[Keepalive] Falha ao iniciar áudio silencioso:", e);
     }
   }
 
   stop() {
-    if (!this.isRunning) return;
+    if (!this.isRunning && !this.audio) return;
     try {
-      if (this.oscillator) {
-        this.oscillator.stop();
-        this.oscillator.disconnect();
-        this.oscillator = null;
-      }
-      if (this.ctx && this.ctx.state !== "closed") {
-        this.ctx.close().catch(() => {});
-        this.ctx = null;
+      if (this.audio) {
+        this.audio.pause();
+        this.audio.currentTime = 0;
       }
     } catch {}
     this.isRunning = false;
@@ -252,15 +236,79 @@ export default function PlayerPage() {
   const wakeLock = useWakeLock(isPlaying);
   const silentKeepaliveRef = useRef(new SilentAudioKeepalive());
   const lastHeartbeatTimeRef = useRef(Date.now());
+  const isPlayingRef = useRef(false);
+  const onTrackEndedRef = useRef<() => void>(() => {});
+  const onTrackErrorRef = useRef<() => void>(() => {});
+  const hasEndedHandledRef = useRef(false);
+  const triggerAudioClockHeartbeatRef = useRef<() => void>(() => {});
+  const resumeOrAdvanceRef = useRef<() => void>(() => {});
 
   const getOrCreateAudio = useCallback((): HTMLAudioElement => {
     if (!audioRef.current) {
       const audio = new Audio();
       audio.preload = "auto";
+      audio.crossOrigin = "anonymous";
+
+      audio.addEventListener("timeupdate", () => {
+        if (Number.isFinite(audio.currentTime)) {
+          setCurrentTime(audio.currentTime);
+          if (audio.currentTime > 0.1 && isBufferingRef.current) {
+            setIsBuffering(false);
+            isBufferingRef.current = false;
+          }
+          triggerAudioClockHeartbeatRef.current();
+        }
+      });
+
+      audio.addEventListener("loadedmetadata", () => {
+        if (Number.isFinite(audio.duration) && audio.duration > 0) {
+          setDuration(audio.duration);
+        }
+      });
+
+      audio.addEventListener("playing", () => {
+        setIsBuffering(false);
+        isBufferingRef.current = false;
+        consecutiveErrorsRef.current = 0;
+        setLoadError(null);
+        if ("mediaSession" in navigator) {
+          navigator.mediaSession.playbackState = "playing";
+        }
+      });
+
+      audio.addEventListener("waiting", () => {
+        setIsBuffering(true);
+        isBufferingRef.current = true;
+      });
+
+      audio.addEventListener("canplay", () => {
+        setIsBuffering(false);
+        isBufferingRef.current = false;
+      });
+
+      audio.addEventListener("ended", () => {
+        setIsBuffering(false);
+        isBufferingRef.current = false;
+        if (!hasEndedHandledRef.current) {
+          hasEndedHandledRef.current = true;
+          onTrackEndedRef.current();
+        }
+      });
+
+      audio.addEventListener("error", () => {
+        setIsBuffering(false);
+        isBufferingRef.current = false;
+        onTrackErrorRef.current();
+      });
+
       audioRef.current = audio;
     }
     return audioRef.current;
   }, []);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
 
   useEffect(() => {
     return () => {
@@ -709,6 +757,8 @@ export default function PlayerPage() {
     }
   }, [playerState, email, uuid, heartbeat, handleHeartbeatResponse]);
 
+  triggerAudioClockHeartbeatRef.current = triggerAudioClockHeartbeat;
+
   // Heartbeat a cada 15s via setInterval para estações normais
   useEffect(() => {
     if (playerState !== "active" || !email) return;
@@ -719,17 +769,6 @@ export default function PlayerPage() {
     }, 15 * 1000);
     return () => clearInterval(id);
   }, [playerState, email, uuid, heartbeat, handleHeartbeatResponse]);
-
-  // Sincroniza heartbeat no retorno da aba (desbloqueio do celular)
-  useEffect(() => {
-    const handleVisChange = () => {
-      if (document.visibilityState === "visible" && playerState === "active" && email) {
-        triggerAudioClockHeartbeat();
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisChange);
-    return () => document.removeEventListener("visibilitychange", handleVisChange);
-  }, [playerState, email, triggerAudioClockHeartbeat]);
 
   const playTrackRef = useRef<(idx: number, resumeAt?: number) => void>(() => {});
 
@@ -744,8 +783,15 @@ export default function PlayerPage() {
       const artist = item.artist || (isCommercial ? "Locução / Vinheta" : "Rádio Indoor");
       const album = queue?.clientName || "Play Comunique";
       const artwork = item.coverUrl
-        ? [{ src: item.coverUrl, sizes: "512x512", type: "image/png" }]
-        : [{ src: "/pwa-512x512.png", sizes: "512x512", type: "image/png" }];
+        ? [
+            { src: item.coverUrl, sizes: "96x96", type: "image/png" },
+            { src: item.coverUrl, sizes: "192x192", type: "image/png" },
+            { src: item.coverUrl, sizes: "512x512", type: "image/png" },
+          ]
+        : [
+            { src: "/pwa-192x192.png", sizes: "192x192", type: "image/png" },
+            { src: "/pwa-512x512.png", sizes: "512x512", type: "image/png" },
+          ];
 
       try {
         navigator.mediaSession.metadata = new MediaMetadata({
@@ -755,18 +801,26 @@ export default function PlayerPage() {
           artwork,
         });
 
+        navigator.mediaSession.playbackState = "playing";
+
         navigator.mediaSession.setActionHandler("play", () => {
-          if (audioRef.current) {
-            silentKeepaliveRef.current.start();
-            audioRef.current.play().catch(() => {});
-            setIsPlaying(true);
+          const a = getOrCreateAudio();
+          silentKeepaliveRef.current.start();
+          a.play().catch(() => {});
+          setIsPlaying(true);
+          isPlayingRef.current = true;
+          if ("mediaSession" in navigator) {
+            navigator.mediaSession.playbackState = "playing";
           }
         });
         navigator.mediaSession.setActionHandler("pause", () => {
-          if (audioRef.current) {
-            audioRef.current.pause();
-            setIsPlaying(false);
-            silentKeepaliveRef.current.stop();
+          const a = getOrCreateAudio();
+          a.pause();
+          setIsPlaying(false);
+          isPlayingRef.current = false;
+          silentKeepaliveRef.current.stop();
+          if ("mediaSession" in navigator) {
+            navigator.mediaSession.playbackState = "paused";
           }
         });
         navigator.mediaSession.setActionHandler("nexttrack", () => {
@@ -783,12 +837,89 @@ export default function PlayerPage() {
             playTrackRef.current(prev);
           }
         });
+        try {
+          navigator.mediaSession.setActionHandler("seekto", (details) => {
+            if (details.seekTime !== undefined && audioRef.current) {
+              audioRef.current.currentTime = details.seekTime;
+              setCurrentTime(details.seekTime);
+            }
+          });
+        } catch {}
       } catch (e) {
         console.warn("[MediaSession] Falha ao registrar action handlers:", e);
       }
     },
-    [queue?.clientName]
+    [queue?.clientName, getOrCreateAudio]
   );
+
+  // Sincroniza estado de posição no lock screen nativo
+  useEffect(() => {
+    if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
+    if (!("setPositionState" in navigator.mediaSession)) return;
+    if (!duration || duration <= 0) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration: duration,
+        playbackRate: 1,
+        position: Math.max(0, Math.min(duration, currentTime)),
+      });
+    } catch {}
+  }, [duration, Math.floor(currentTime)]);
+
+  // Sincronizador contínuo de progresso (a cada 250ms enquanto tocando)
+  // Garante que barra e contador avancem continuamente mesmo se o navegador móvel suprimir eventos timeupdate
+  useEffect(() => {
+    if (!isPlaying) return;
+    const ticker = setInterval(() => {
+      const a = audioRef.current;
+      if (a && !a.paused && Number.isFinite(a.currentTime)) {
+        setCurrentTime(a.currentTime);
+        if (Number.isFinite(a.duration) && a.duration > 0) {
+          setDuration((prev) => (prev > 0 ? prev : a.duration));
+        }
+        if (a.currentTime > 0.1 && isBufferingRef.current) {
+          setIsBuffering(false);
+          isBufferingRef.current = false;
+        }
+        // Salvaguarda caso a faixa termine enquanto bloqueado
+        if (a.duration > 0 && a.currentTime >= a.duration - 0.25 && !hasEndedHandledRef.current) {
+          hasEndedHandledRef.current = true;
+          onTrackEndedRef.current();
+        }
+      }
+    }, 250);
+
+    return () => clearInterval(ticker);
+  }, [isPlaying]);
+
+  // Sincroniza áudio e heartbeat ao retornar à aba (desbloqueio do celular)
+  useEffect(() => {
+    const handleVisChange = () => {
+      if (document.visibilityState === "visible") {
+        const a = audioRef.current;
+        if (a) {
+          if (Number.isFinite(a.currentTime)) {
+            setCurrentTime(a.currentTime);
+          }
+          if (Number.isFinite(a.duration) && a.duration > 0) {
+            setDuration(a.duration);
+          }
+          if (isPlayingRef.current && a.paused && !a.ended) {
+            a.play().catch(() => {});
+          }
+          if (isPlayingRef.current && a.ended && !hasEndedHandledRef.current) {
+            hasEndedHandledRef.current = true;
+            onTrackEndedRef.current();
+          }
+        }
+        if (playerState === "active" && email) {
+          triggerAudioClockHeartbeatRef.current();
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisChange);
+    return () => document.removeEventListener("visibilitychange", handleVisChange);
+  }, [playerState, email]);
 
   // Apply volume/mute to the live <audio> element whenever they change.
   useEffect(() => {
@@ -808,6 +939,7 @@ export default function PlayerPage() {
   const handleStart = () => {
     setStarted(true);
     setIsPlaying(true);
+    isPlayingRef.current = true;
     silentKeepaliveRef.current.start();
     playTrack(currentIdx);
   };
@@ -817,7 +949,7 @@ export default function PlayerPage() {
   const currentItem = currentJingle ?? scheduledItems[currentIdx] ?? null;
 
   const playTrack = useCallback((idx: number, resumeAt: number = 0) => {
-    const items = scheduledItems;
+    const items = scheduledItemsRef.current;
     if (!items || !items[idx]) return;
     const track = items[idx];
     currentIdxRef.current = idx;
@@ -836,30 +968,25 @@ export default function PlayerPage() {
     setCurrentJingle(null);
     inJingleRef.current = false;
     resumeMusicIdxRef.current = null;
+    hasEndedHandledRef.current = false;
 
     setIsBuffering(true);
     isBufferingRef.current = true;
 
     // Reaproveita o elemento de áudio persistente único desbloqueado pelo usuário
     const audio = getOrCreateAudio();
-    audio.onended = null;
-    audio.onerror = null;
-    audio.onplaying = null;
-    audio.oncanplay = null;
-    audio.onwaiting = null;
-    audio.onloadstart = null;
-    audio.ontimeupdate = null;
-    audio.onloadedmetadata = null;
+    silentKeepaliveRef.current.start();
 
-    if (audio.src !== track.url) {
-      audio.src = track.url;
-    }
-    audio.preload = "auto";
     const vol = effectiveVolume(track.type);
     audio.volume = vol;
     audio.muted = muted || vol <= 0.001;
     setCurrentTime(resumeAt);
     setDuration(track.duration && Number.isFinite(track.duration) && track.duration > 0 ? track.duration : 0);
+
+    if (audio.src !== track.url) {
+      audio.src = track.url;
+      audio.load();
+    }
 
     if (resumeAt > 0) {
       const trySeek = () => {
@@ -868,106 +995,21 @@ export default function PlayerPage() {
       audio.addEventListener("loadedmetadata", trySeek, { once: true });
     }
 
-    audio.onloadstart = () => {
-      setIsBuffering(true);
-      isBufferingRef.current = true;
-    };
-
-    audio.onwaiting = () => {
-      setIsBuffering(true);
-      isBufferingRef.current = true;
-    };
-
-    audio.oncanplay = () => {
-      setIsBuffering(false);
-      isBufferingRef.current = false;
-    };
-
-    silentKeepaliveRef.current.start();
-
-    audio.play().catch((err) => {
-      console.error("Falha ao tocar áudio:", track.url, err);
-    });
-
-    let hasLoggedTrack = false;
-    audio.onplaying = () => {
+    audio.play().then(() => {
       setIsBuffering(false);
       isBufferingRef.current = false;
       consecutiveErrorsRef.current = 0;
       setLoadError(null);
-      if (!hasLoggedTrack) {
-        hasLoggedTrack = true;
-        logPlayback.mutate({ data: { mediaId: track.id, uuid, email } });
-      }
+      logPlayback.mutate({ data: { mediaId: track.id, uuid, email } });
       updateMediaSession(track);
-
-      // Preload do próximo áudio no cache do navegador para transição instantânea
-      try {
-        const currentList = scheduledItemsRef.current;
-        if (currentList.length > 1) {
-          const nextIdx = (idx + 1) % currentList.length;
-          const nextTrack = currentList[nextIdx];
-          if (nextTrack?.url) {
-            const preloader = new Audio();
-            preloader.preload = "auto";
-            preloader.src = nextTrack.url;
-          }
-        }
-      } catch {}
-    };
-
-    audio.onloadedmetadata = () => {
-      if (Number.isFinite(audio.duration) && audio.duration > 0) {
-        setDuration(audio.duration);
-      }
-    };
-
-    audio.ontimeupdate = () => {
-      setCurrentTime(audio.currentTime);
-      if (audio.currentTime > 0.1 && isBufferingRef.current) {
-        setIsBuffering(false);
-        isBufferingRef.current = false;
-      }
-      triggerAudioClockHeartbeat();
-    };
-
-    audio.onended = () => {
-      setIsBuffering(false);
-      isBufferingRef.current = false;
-      const currentList = scheduledItemsRef.current;
-      if (!currentList.length) return;
-      const next = (idx + 1) % currentList.length;
-      if (next === 0 && effectivePlaybackMode === "shuffle") {
-        setShuffleCycle((c) => c + 1);
-      }
-      playTrack(next);
-    };
-
-    audio.onerror = () => {
-      setIsBuffering(false);
-      isBufferingRef.current = false;
-      console.error("Erro carregando áudio:", track.url);
-      consecutiveErrorsRef.current += 1;
-      if (consecutiveErrorsRef.current >= items.length) {
-        setIsPlaying(false);
-        setLoadError(
-          "Nenhum dos arquivos da playlist pode ser carregado. " +
-          "As mídias podem ter sido removidas do servidor — peça ao administrador para reenviá-las.",
-        );
-        return;
-      }
-      skipTimerRef.current = setTimeout(() => {
-        skipTimerRef.current = null;
-        const currentList = scheduledItemsRef.current;
-        if (!currentList.length) return;
-        const next = (idx + 1) % currentList.length;
-        playTrack(next);
-      }, 1500);
-    };
+    }).catch((err) => {
+      console.error("Falha ao tocar áudio:", track.url, err);
+    });
 
     setIsPlaying(true);
+    isPlayingRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scheduledItems, uuid, email, effectivePlaybackMode, effectiveVolume, getOrCreateAudio, logPlayback, muted, triggerAudioClockHeartbeat, updateMediaSession]);
+  }, [uuid, email, effectiveVolume, getOrCreateAudio, logPlayback, muted, updateMediaSession]);
 
   playTrackRef.current = playTrack;
 
@@ -978,7 +1020,8 @@ export default function PlayerPage() {
   const playJingleInterrupt = useCallback((targetJingle?: QueueItem) => {
     if (inJingleRef.current) return;
     if (jinglesPool.length === 0) return;
-    if (!scheduledItems.length) return;
+    const items = scheduledItemsRef.current;
+    if (!items.length) return;
     const jingle = targetJingle ?? jinglesPool[jingleCycleRef.current % jinglesPool.length]!;
     if (!targetJingle) {
       jingleCycleRef.current += 1;
@@ -988,7 +1031,7 @@ export default function PlayerPage() {
     const audio = getOrCreateAudio();
     const prevTime = audio.currentTime ?? 0;
     const prevDuration = (Number.isFinite(audio.duration)) ? audio.duration : 0;
-    resumeMusicIdxRef.current = currentIdx;
+    resumeMusicIdxRef.current = currentIdxRef.current;
     resumeMusicTimeRef.current = prevTime;
     resumeMusicDurationRef.current = prevDuration;
 
@@ -999,6 +1042,7 @@ export default function PlayerPage() {
     clearTimeModeTimers();
 
     inJingleRef.current = true;
+    hasEndedHandledRef.current = false;
     setCurrentJingle({
       id: jingle.id,
       title: jingle.title,
@@ -1011,114 +1055,108 @@ export default function PlayerPage() {
     setIsBuffering(true);
     isBufferingRef.current = true;
 
-    // Reutiliza o mesmo elemento de áudio persistente
-    audio.onended = null;
-    audio.onerror = null;
-    audio.onplaying = null;
-    audio.oncanplay = null;
-    audio.onwaiting = null;
-    audio.onloadstart = null;
-    audio.ontimeupdate = null;
-    audio.onloadedmetadata = null;
+    silentKeepaliveRef.current.start();
 
-    if (audio.src !== jingle.url) {
-      audio.src = jingle.url;
-    }
-    audio.preload = "auto";
     const vol = effectiveVolume(jingle.type || "voiceover");
     audio.volume = vol;
     audio.muted = muted || vol <= 0.001;
     setCurrentTime(0);
     setDuration(jingle.duration && Number.isFinite(jingle.duration) && jingle.duration > 0 ? jingle.duration : 0);
 
-    audio.onloadstart = () => {
-      setIsBuffering(true);
-      isBufferingRef.current = true;
-    };
-    audio.onwaiting = () => {
-      setIsBuffering(true);
-      isBufferingRef.current = true;
-    };
-    audio.oncanplay = () => {
+    if (audio.src !== jingle.url) {
+      audio.src = jingle.url;
+      audio.load();
+    }
+
+    audio.play().then(() => {
       setIsBuffering(false);
       isBufferingRef.current = false;
-    };
-
-    silentKeepaliveRef.current.start();
-
-    audio.play().catch((err) => {
+      logPlayback.mutate({ data: { mediaId: jingle.id, uuid, email } });
+      updateMediaSession(jingle);
+    }).catch((err) => {
       console.error("Falha ao tocar locução:", jingle.url, err);
+      resumeOrAdvanceRef.current();
     });
 
-    audio.onloadedmetadata = () => {
-      if (Number.isFinite(audio.duration) && audio.duration > 0) {
-        setDuration(audio.duration);
-      }
-    };
-
-    audio.ontimeupdate = () => {
-      setCurrentTime(audio.currentTime);
-      if (audio.currentTime > 0.1 && isBufferingRef.current) {
-        setIsBuffering(false);
-        isBufferingRef.current = false;
-      }
-      triggerAudioClockHeartbeat();
-    };
-
-    const resumeOrAdvance = () => {
-      setIsBuffering(false);
-      isBufferingRef.current = false;
-      // Garante que o estado de "em locução" seja limpo mesmo se algo abaixo
-      // der curto-circuito (queue vazia, idx inválido, etc).
-      setCurrentJingle(null);
-      inJingleRef.current = false;
-      const items = scheduledItems;
-      if (!items || items.length === 0) {
-        // Queue ficou vazia durante a locução — para o player.
-        if (audioRef.current) {
-          try { audioRef.current.pause(); } catch { /* ignore */ }
-        }
-        setIsPlaying(false);
-        return;
-      }
-      const safeIdx = ((resumeMusicIdxRef.current ?? currentIdx) % items.length + items.length) % items.length;
-      const resumeTime = resumeMusicTimeRef.current ?? 0;
-      const resumeDuration = resumeMusicDurationRef.current ?? 0;
-      const remaining = resumeDuration > 0 ? resumeDuration - resumeTime : Infinity;
-      if (resumeDuration > 0 && remaining < RESUME_THRESHOLD_S) {
-        // Quase no fim: pula pra próxima música.
-        const next = (safeIdx + 1) % items.length;
-        setCurrentIdx(next);
-        playTrack(next, 0);
-      } else {
-        // Retoma a MESMA música do ponto onde a locução interrompeu.
-        playTrack(safeIdx, resumeTime);
-      }
-    };
-
-    let hasLoggedJingle = false;
-    audio.onplaying = () => {
-      setIsBuffering(false);
-      isBufferingRef.current = false;
-      if (!hasLoggedJingle) {
-        hasLoggedJingle = true;
-        logPlayback.mutate({ data: { mediaId: jingle.id, uuid, email } });
-      }
-      updateMediaSession(jingle);
-    };
-
-    audio.onended = () => {
-      resumeOrAdvance();
-    };
-
-    audio.onerror = () => {
-      console.error("Erro carregando locução:", jingle.url);
-      resumeOrAdvance();
-    };
-
     setIsPlaying(true);
+    isPlayingRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jinglesPool, scheduledItems, currentIdx, muted, uuid, email, playTrack, effectiveVolume, getOrCreateAudio, logPlayback, triggerAudioClockHeartbeat, updateMediaSession]);
+  }, [jinglesPool, muted, uuid, email, effectiveVolume, getOrCreateAudio, logPlayback, updateMediaSession]);
+
+  const resumeOrAdvance = useCallback(() => {
+    setIsBuffering(false);
+    isBufferingRef.current = false;
+    setCurrentJingle(null);
+    inJingleRef.current = false;
+    hasEndedHandledRef.current = false;
+    const items = scheduledItemsRef.current;
+    if (!items || items.length === 0) {
+      if (audioRef.current) {
+        try { audioRef.current.pause(); } catch { /* ignore */ }
+      }
+      setIsPlaying(false);
+      isPlayingRef.current = false;
+      return;
+    }
+    const safeIdx = ((resumeMusicIdxRef.current ?? currentIdxRef.current) % items.length + items.length) % items.length;
+    const resumeTime = resumeMusicTimeRef.current ?? 0;
+    const resumeDuration = resumeMusicDurationRef.current ?? 0;
+    const remaining = resumeDuration > 0 ? resumeDuration - resumeTime : Infinity;
+    if (resumeDuration > 0 && remaining < RESUME_THRESHOLD_S) {
+      // Quase no fim: pula pra próxima música.
+      const next = (safeIdx + 1) % items.length;
+      playTrackRef.current(next, 0);
+    } else {
+      // Retoma a MESMA música do ponto onde a locução interrompeu.
+      playTrackRef.current(safeIdx, resumeTime);
+    }
+  }, [RESUME_THRESHOLD_S]);
+
+  resumeOrAdvanceRef.current = resumeOrAdvance;
+
+  const handleTrackEnded = useCallback(() => {
+    if (inJingleRef.current) {
+      resumeOrAdvanceRef.current();
+    } else {
+      const currentList = scheduledItemsRef.current;
+      if (!currentList.length) return;
+      const next = (currentIdxRef.current + 1) % currentList.length;
+      if (next === 0 && effectivePlaybackMode === "shuffle") {
+        setShuffleCycle((c) => c + 1);
+      }
+      playTrackRef.current(next);
+    }
+  }, [effectivePlaybackMode]);
+
+  onTrackEndedRef.current = handleTrackEnded;
+
+  const handleTrackError = useCallback(() => {
+    setIsBuffering(false);
+    isBufferingRef.current = false;
+    if (inJingleRef.current) {
+      resumeOrAdvanceRef.current();
+      return;
+    }
+    const items = scheduledItemsRef.current;
+    consecutiveErrorsRef.current += 1;
+    if (consecutiveErrorsRef.current >= items.length) {
+      setIsPlaying(false);
+      isPlayingRef.current = false;
+      setLoadError(
+        "Nenhum dos arquivos da playlist pode ser carregado. As mídias podem ter sido removidas do servidor — peça ao administrador para reenviá-las."
+      );
+      return;
+    }
+    skipTimerRef.current = setTimeout(() => {
+      skipTimerRef.current = null;
+      const currentList = scheduledItemsRef.current;
+      if (!currentList.length) return;
+      const next = (currentIdxRef.current + 1) % currentList.length;
+      playTrackRef.current(next);
+    }, 1500);
+  }, []);
+
+  onTrackErrorRef.current = handleTrackError;
 
   // Faz fade-out gradual do volume da música atual ao longo de FADE_OUT_MS.
   const startFadeOut = useCallback(() => {
@@ -1200,6 +1238,15 @@ export default function PlayerPage() {
     if (a && Number.isFinite(a.duration) && a.duration > 0) {
       a.currentTime = Math.max(0, Math.min(a.duration, value));
       setCurrentTime(a.currentTime);
+      if ("mediaSession" in navigator && "setPositionState" in navigator.mediaSession) {
+        try {
+          navigator.mediaSession.setPositionState({
+            duration: a.duration,
+            playbackRate: 1,
+            position: a.currentTime,
+          });
+        } catch {}
+      }
     }
   };
 
@@ -1223,13 +1270,21 @@ export default function PlayerPage() {
     if (isPlaying) {
       a.pause();
       setIsPlaying(false);
+      isPlayingRef.current = false;
       silentKeepaliveRef.current.stop();
+      if ("mediaSession" in navigator) {
+        navigator.mediaSession.playbackState = "paused";
+      }
     } else {
       silentKeepaliveRef.current.start();
       a.play().catch((err) => {
         console.error("Erro ao retomar áudio:", err);
       });
       setIsPlaying(true);
+      isPlayingRef.current = true;
+      if ("mediaSession" in navigator) {
+        navigator.mediaSession.playbackState = "playing";
+      }
     }
   };
 
@@ -1594,18 +1649,21 @@ export default function PlayerPage() {
 
     // Stop current audio cleanly
     if (audioRef.current) {
-      audioRef.current.onended = null;
-      audioRef.current.onerror = null;
-      audioRef.current.onplaying = null;
       try { audioRef.current.pause(); } catch { /* ignore */ }
       audioRef.current.src = "";
+    }
+    silentKeepaliveRef.current.stop();
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.playbackState = "paused";
     }
     clearTimeModeTimers();
     setCurrentJingle(null);
     inJingleRef.current = false;
     resumeMusicIdxRef.current = null;
+    hasEndedHandledRef.current = false;
     setCurrentIdx(0);
     setIsPlaying(false);
+    isPlayingRef.current = false;
     setStarted(false);
     setLoadError(null);
     consecutiveErrorsRef.current = 0;
