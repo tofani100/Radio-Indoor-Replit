@@ -4,7 +4,7 @@ import {
   Clock, Music, Activity, Headphones, Hash, Mic2, SlidersHorizontal,
   Download, Share, CheckCircle2, X, ListMusic, ChevronDown, ArrowLeftRight, Shuffle,
   Building2, Globe, Disc3, Megaphone, ListOrdered, Check, Loader2,
-  Sun, SunDim, Moon,
+  Sun, SunDim, Moon, Info,
 } from "lucide-react";
 import {
   useRegisterDevice, useGetPlaybackQueue, getGetPlaybackQueueQueryKey,
@@ -15,6 +15,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import logoSrc from "@assets/LOGO_1777766957414.png";
 import { usePwaInstall } from "@/hooks/usePwaInstall";
 import { useWakeLock } from "@/hooks/useWakeLock";
+import { useLongPress } from "@/hooks/useLongPress";
 import { APP_VERSION, isDev, APP_DEV_VERSION, APP_PROD_VERSION } from "@/components/Layout";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
@@ -1472,13 +1473,80 @@ export default function PlayerPage() {
     setTimeout(() => { void refetchQueue(); }, 50);
   };
 
+  const [infoPopup, setInfoPopup] = useState<{ title: string; description: string } | null>(null);
+
+  const longPressMode = useLongPress(
+    () => {
+      setInfoPopup({
+        title: "Ordem de Exibição",
+        description: `Define como as faixas da playlist são tocadas:\n\n• Aleatória: Músicas sorteadas aleatoriamente.\n• Sequencial: Músicas na ordem original cadastrada.\n\nModo ativo: ${effectivePlaybackMode === "shuffle" ? "Exibição Aleatória" : "Exibição Sequencial"}.\n\nToque rápido para abrir as opções.`,
+      });
+    },
+    () => {
+      setModeDropdownOpen((open) => !open);
+    }
+  );
+
+  const longPressStyle = useLongPress(
+    () => {
+      setInfoPopup({
+        title: "Trocar Estilo Musical",
+        description: `Permite selecionar o gênero musical ou álbuns temáticos para o seu ambiente.\n\nEstilo ativo: ${selectedStyleSummary}.\n\nToque rápido para abrir a lista de estilos.`,
+      });
+    },
+    () => {
+      setPlaylistModalOpen(true);
+    }
+  );
+
+  const longPressCommercial = useLongPress(
+    () => {
+      setInfoPopup({
+        title: "Grade Comercial",
+        description: `Permite escolher a grade de comerciais e locuções da loja.\n\nGrade ativa: ${currentCommercialName}.\n\nToque rápido para alterar.`,
+      });
+    },
+    () => {
+      setCommercialModalOpen(true);
+    }
+  );
+
+  const longPressWakeLock = useLongPress(
+    () => {
+      const statusDesc = !wakeLock.enabled
+        ? "Desativado (tela apaga conforme padrão do celular)"
+        : wakeLock.dimmed
+        ? "Modo Eco 30% (tela ativa e escurecida para economizar bateria)"
+        : "Brilho 100% (tela ativa com brilho normal)";
+      setInfoPopup({
+        title: "Controle de Tela & Brilho",
+        description: `Mantém a tela ligada para a música continuar tocando sem interrupção:\n\n• Modo Eco (30%): Reduz o brilho da tela para poupar bateria e evitar aquecimento no celular.\n• Brilho 100%: Mantém a tela ativa com brilho normal.\n• Desativado: A tela apaga no tempo padrão do aparelho.\n\nStatus atual: ${statusDesc}.\n\nToque rápido no ícone para alternar entre os modos.`,
+      });
+    },
+    () => {
+      wakeLock.cycleMode();
+    }
+  );
+
+  const longPressSwitchAccount = useLongPress(
+    () => {
+      setInfoPopup({
+        title: "Trocar Conta",
+        description: `Dispositivo conectado com o e-mail:\n${email}\n\nToque rápido para deslogar este aparelho e liberar o acesso.`,
+      });
+    },
+    () => {
+      void handleSwitchAccount();
+    }
+  );
+
   return (
     <div className="dj-console-scope min-h-screen lg:h-screen w-full flex flex-col p-2 sm:p-3 lg:p-4 gap-2 sm:gap-3 lg:gap-4 box-border overflow-y-auto lg:overflow-hidden select-none">
       {/* Top Header */}
-      <header className="flex-none h-10 sm:h-14 bg-[var(--dj-panel)] border border-[var(--dj-border)] rounded-lg flex items-center justify-between px-3 sm:px-6 shadow-lg">
-        {/* Item 1: Logo e Versão (informação Operator Console eliminada para ganho de espaço) */}
-        <div className="flex items-center gap-2 sm:gap-3">
-          <img src={logoSrc} alt="Play-Comunique" className="h-7 object-contain" />
+      <header className="flex-none h-10 sm:h-14 bg-[var(--dj-panel)] border border-[var(--dj-border)] rounded-lg flex items-center justify-between px-2 sm:px-6 shadow-lg overflow-x-hidden">
+        {/* Item 1: Logo (apenas no desktop) e Versão */}
+        <div className="flex items-center gap-1.5 sm:gap-3 flex-none">
+          <img src={logoSrc} alt="Play-Comunique" className="hidden sm:block h-7 object-contain" />
           {isDev ? (
             <span className="px-2 py-0.5 rounded-full bg-orange-500 text-white font-mono text-[10px] font-extrabold tracking-wider shadow-md animate-pulse">
               {APP_DEV_VERSION}
@@ -1490,14 +1558,31 @@ export default function PlayerPage() {
           )}
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-3">
-          {/* Item 2: Botão Colapsável de Modo (Exibição Aleatória / Sequencial com texto empilhado verticalmente) */}
+        <div className="flex items-center gap-1.5 sm:gap-3 flex-none">
+          {/* Item 2: Ordem de Exibição (Apenas ícone no mobile com toque contínuo para ajuda) */}
           <div className="relative" ref={modeDropdownRef}>
+            {/* Mobile: Apenas ícone */}
+            <button
+              data-testid="button-toggle-playback-mode-mobile"
+              type="button"
+              {...longPressMode}
+              className="sm:hidden w-7 h-7 rounded border border-[var(--dj-cyan)] bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] flex items-center justify-center transition-colors cursor-pointer"
+              title="Ordem de Exibição (Toque contínuo para ajuda)"
+              aria-label="Ordem de Exibição"
+            >
+              {effectivePlaybackMode === "shuffle" ? (
+                <Shuffle className="w-3.5 h-3.5 text-[var(--dj-cyan)]" />
+              ) : (
+                <ListOrdered className="w-3.5 h-3.5 text-[var(--dj-cyan)]" />
+              )}
+            </button>
+
+            {/* Desktop: Ícone + Texto */}
             <button
               data-testid="button-toggle-playback-mode"
               type="button"
               onClick={() => setModeDropdownOpen((open) => !open)}
-              className="flex items-center gap-1.5 sm:gap-2 px-2.5 py-1 rounded border border-[var(--dj-cyan)] bg-[var(--dj-cyan-glow)] text-[var(--dj-text)] hover:bg-[var(--dj-cyan)]/20 transition-all cursor-pointer shadow-[0_0_10px_rgba(0,240,255,0.2)]"
+              className="hidden sm:flex items-center gap-1.5 sm:gap-2 px-2.5 py-1 rounded border border-[var(--dj-cyan)] bg-[var(--dj-cyan-glow)] text-[var(--dj-text)] hover:bg-[var(--dj-cyan)]/20 transition-all cursor-pointer shadow-[0_0_10px_rgba(0,240,255,0.2)]"
               title="Modo de Exibição (Clique para abrir opções entre Exibição Aleatória e Exibição Sequencial)"
             >
               {effectivePlaybackMode === "shuffle" ? (
@@ -1517,7 +1602,7 @@ export default function PlayerPage() {
             </button>
 
             {modeDropdownOpen && (
-              <div className="absolute top-full mt-1.5 left-0 z-50 min-w-[190px] bg-[#0d1322] border border-[var(--dj-border)] rounded-lg shadow-2xl p-1.5 backdrop-blur-md animate-in fade-in zoom-in-95 duration-100">
+              <div className="absolute top-full mt-1.5 right-0 sm:left-0 z-50 min-w-[190px] bg-[#0d1322] border border-[var(--dj-border)] rounded-lg shadow-2xl p-1.5 backdrop-blur-md animate-in fade-in zoom-in-95 duration-100">
                 <div className="px-2 py-1 text-[9px] uppercase tracking-widest text-[var(--dj-muted)] font-bold border-b border-[var(--dj-border)]/60 mb-1">
                   Ordem de Exibição
                 </div>
@@ -1565,12 +1650,25 @@ export default function PlayerPage() {
             )}
           </div>
 
-          {/* Item 3: Botão Trocar Estilo no Header */}
+          {/* Item 3: Botão Trocar Estilo (Apenas ícone no mobile com toque contínuo para ajuda) */}
+          {/* Mobile: Apenas ícone */}
+          <button
+            data-testid="header-button-musical-mobile"
+            type="button"
+            {...longPressStyle}
+            className="sm:hidden w-7 h-7 rounded border border-emerald-500 bg-emerald-500/15 text-emerald-300 flex items-center justify-center hover:bg-emerald-500 hover:text-[#060a14] transition-colors cursor-pointer shadow-sm"
+            title={`Trocar Estilo Musical (${selectedStyleSummary} - toque contínuo para ajuda)`}
+            aria-label="Trocar Estilo Musical"
+          >
+            <Disc3 className="w-3.5 h-3.5 text-emerald-400" />
+          </button>
+
+          {/* Desktop: Ícone + Texto */}
           <button
             data-testid="header-button-musical"
             type="button"
             onClick={() => setPlaylistModalOpen(true)}
-            className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1 rounded border border-emerald-500 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500 hover:text-[#060a14] transition-all cursor-pointer shadow-sm group"
+            className="hidden sm:flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1 rounded border border-emerald-500 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500 hover:text-[#060a14] transition-all cursor-pointer shadow-sm group"
             title="Trocar Estilo (Mix Aleatório ou Álbuns Temáticos)"
           >
             <Disc3 className="w-3.5 h-3.5 flex-none text-emerald-400 group-hover:text-[#060a14]" />
@@ -1587,19 +1685,34 @@ export default function PlayerPage() {
 
           {/* 📢 Botão Grade Comercial no Header (se houver mais de uma opção) */}
           {commercialPlaylists.length > 1 && (
-            <button
-              data-testid="header-button-commercial"
-              type="button"
-              onClick={() => setCommercialModalOpen(true)}
-              className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded border border-amber-500 bg-amber-500/15 text-amber-300 hover:bg-amber-500 hover:text-[#060a14] text-[11px] font-bold tracking-wider transition-all cursor-pointer shadow-sm"
-              title="Alternar Programação Comercial (Jingles & Locuções)"
-            >
-              <Megaphone className="w-3.5 h-3.5 flex-none text-amber-400" />
-              <span className="truncate max-w-[100px] sm:max-w-[130px]">
-                {currentCommercialName}
-              </span>
-              <span className="text-[9px] uppercase tracking-widest opacity-80 font-mono hidden sm:inline">▼</span>
-            </button>
+            <>
+              {/* Mobile: Apenas ícone */}
+              <button
+                data-testid="header-button-commercial-mobile"
+                type="button"
+                {...longPressCommercial}
+                className="sm:hidden w-7 h-7 rounded border border-amber-500 bg-amber-500/15 text-amber-300 flex items-center justify-center hover:bg-amber-500 hover:text-[#060a14] transition-colors cursor-pointer shadow-sm"
+                title={`Grade Comercial (${currentCommercialName} - toque contínuo para ajuda)`}
+                aria-label="Grade Comercial"
+              >
+                <Megaphone className="w-3.5 h-3.5 text-amber-400" />
+              </button>
+
+              {/* Desktop: Ícone + Texto */}
+              <button
+                data-testid="header-button-commercial"
+                type="button"
+                onClick={() => setCommercialModalOpen(true)}
+                className="hidden sm:flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded border border-amber-500 bg-amber-500/15 text-amber-300 hover:bg-amber-500 hover:text-[#060a14] text-[11px] font-bold tracking-wider transition-all cursor-pointer shadow-sm"
+                title="Alternar Programação Comercial (Jingles & Locuções)"
+              >
+                <Megaphone className="w-3.5 h-3.5 flex-none text-amber-400" />
+                <span className="truncate max-w-[100px] sm:max-w-[130px]">
+                  {currentCommercialName}
+                </span>
+                <span className="text-[9px] uppercase tracking-widest opacity-80 font-mono hidden sm:inline">▼</span>
+              </button>
+            </>
           )}
 
           <div className="hidden md:flex items-center gap-2 text-xs font-semibold">
@@ -1670,77 +1783,75 @@ export default function PlayerPage() {
             </button>
           ) : null}
 
-          {/* ── MOBILE: ícone trocar conta ── */}
+          {/* ── MOBILE: ícone trocar conta (com toque contínuo para ajuda) ── */}
           <button
             data-testid="button-switch-account-mobile"
             type="button"
             disabled={isSwitching}
-            onClick={() => { void handleSwitchAccount(); }}
+            {...longPressSwitchAccount}
             className="sm:hidden w-7 h-7 rounded border border-[var(--dj-border)] bg-[var(--dj-bg)] text-[var(--dj-muted)] flex items-center justify-center hover:border-[var(--dj-magenta)] hover:text-[var(--dj-magenta)] transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
-            title={`Trocar conta (${email}) e liberar acesso`}
+            title={`Trocar conta (${email}) e liberar acesso (toque contínuo para ajuda)`}
             aria-label="Trocar conta"
           >
             <ArrowLeftRight className="w-3.5 h-3.5" />
           </button>
 
-          {/* ── MOBILE: manter tela ligada (com modo eco 30%) ── */}
+          {/* ── MOBILE: manter tela ligada (com ciclo Eco 30% / 100% / Desligado e toque contínuo para ajuda) ── */}
           {wakeLock.isSupported && (
             <button
               data-testid="button-wakelock-mobile"
               type="button"
-              onClick={wakeLock.toggleEnabled}
-              className={`sm:hidden w-7 h-7 rounded border flex items-center justify-center transition-colors cursor-pointer ${
-                wakeLock.enabled
-                  ? wakeLock.dimmed
-                    ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.2)]"
-                    : "bg-yellow-500/20 border-yellow-500/50 text-yellow-300 shadow-[0_0_8px_rgba(234,179,8,0.2)]"
+              {...longPressWakeLock}
+              className={`sm:hidden w-7 h-7 rounded border flex items-center justify-center transition-all cursor-pointer ${
+                wakeLock.mode === "eco"
+                  ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.25)]"
+                  : wakeLock.mode === "full"
+                  ? "bg-yellow-500/20 border-yellow-500/50 text-yellow-300 shadow-[0_0_8px_rgba(234,179,8,0.25)]"
                   : "bg-[var(--dj-bg)] border-[var(--dj-border)] text-[var(--dj-muted)] hover:text-[var(--dj-text)]"
               }`}
               title={
-                wakeLock.enabled
-                  ? wakeLock.dimmed
-                    ? "Tela Ligada (Modo Eco 30%): Ativado para economizar bateria. Toque para desligar."
-                    : "Tela Ligada (100% Brilho): Ativado. Toque para desligar."
-                  : "Manter tela ligada: Desativado (o display apagará sozinho). Toque para ativar."
+                wakeLock.mode === "eco"
+                  ? "Tela Eco (30% Brilho) Ativo. Toque para 100% ou segure para ajuda."
+                  : wakeLock.mode === "full"
+                  ? "Tela 100% Brilho Ativo. Toque para desligar ou segure para ajuda."
+                  : "Tela Normal. Toque para ativar Modo Eco (30%) ou segure para ajuda."
               }
-              aria-label="Alternar manter tela ligada"
+              aria-label="Controle de tela e brilho"
             >
-              {wakeLock.enabled ? (
-                wakeLock.dimmed ? <Moon className="w-3.5 h-3.5 text-amber-400" /> : <Sun className="w-3.5 h-3.5 text-yellow-400" />
+              {wakeLock.mode === "eco" ? (
+                <Moon className="w-3.5 h-3.5 text-amber-400" />
+              ) : wakeLock.mode === "full" ? (
+                <Sun className="w-3.5 h-3.5 text-yellow-400" />
               ) : (
                 <SunDim className="w-3.5 h-3.5" />
               )}
             </button>
           )}
 
-          {/* ── DESKTOP: manter tela ligada (opcional) ── */}
+          {/* ── DESKTOP: manter tela ligada (com ciclo de 3 modos) ── */}
           {wakeLock.isSupported && (
             <button
               data-testid="button-wakelock-desktop"
               type="button"
-              onClick={wakeLock.toggleEnabled}
+              onClick={wakeLock.cycleMode}
               className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider border transition-all cursor-pointer ${
-                wakeLock.enabled
-                  ? wakeLock.dimmed
-                    ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.2)]"
-                    : "bg-yellow-500/20 border-yellow-500/50 text-yellow-300 shadow-[0_0_10px_rgba(234,179,8,0.2)]"
+                wakeLock.mode === "eco"
+                  ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.2)]"
+                  : wakeLock.mode === "full"
+                  ? "bg-yellow-500/20 border-yellow-500/50 text-yellow-300 shadow-[0_0_10px_rgba(234,179,8,0.2)]"
                   : "bg-[var(--dj-bg)] border-[var(--dj-border)] text-[var(--dj-muted)] hover:text-[var(--dj-text)]"
               }`}
-              title={
-                wakeLock.enabled
-                  ? wakeLock.dimmed
-                    ? "Tela Ligada (Modo Eco 30%): Mantém a tela ativa e economiza bateria. Toque para desligar."
-                    : "Tela Ligada (100%): Mantém a tela ativa em brilho normal. Toque para desligar."
-                  : "Manter tela ligada: Desativado. Toque para ativar."
-              }
+              title="Alternar: Modo Eco (30%) -> Brilho 100% -> Tela Normal"
               aria-label="Alternar manter tela ligada"
             >
-              {wakeLock.enabled ? (
-                wakeLock.dimmed ? <Moon className="w-3.5 h-3.5 text-amber-400" /> : <Sun className="w-3.5 h-3.5 text-yellow-400" />
+              {wakeLock.mode === "eco" ? (
+                <Moon className="w-3.5 h-3.5 text-amber-400" />
+              ) : wakeLock.mode === "full" ? (
+                <Sun className="w-3.5 h-3.5 text-yellow-400" />
               ) : (
                 <SunDim className="w-3.5 h-3.5" />
               )}
-              <span>{wakeLock.enabled ? (wakeLock.dimmed ? "Tela Eco 30%" : "Tela 100%") : "Tela Normal"}</span>
+              <span>{wakeLock.mode === "eco" ? "Tela Eco 30%" : wakeLock.mode === "full" ? "Tela 100%" : "Tela Normal"}</span>
             </button>
           )}
 
@@ -2520,36 +2631,29 @@ export default function PlayerPage() {
         />
       )}
 
-      {/* ── BADGE FLUTUANTE DE CONTROLE DE BRILHO (quando Manter Tela Ligada está ativo) ── */}
-      {wakeLock.enabled && (
-        <div className="fixed bottom-3 right-3 z-40 flex items-center shadow-xl">
-          <button
-            data-testid="button-wakelock-toggle-dim"
-            type="button"
-            onClick={wakeLock.toggleDimmed}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold backdrop-blur-md border transition-all cursor-pointer ${
-              wakeLock.dimmed
-                ? "bg-[#0a0f1d]/90 border-amber-500/40 text-amber-300 hover:border-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.25)]"
-                : "bg-[#0a0f1d]/90 border-yellow-500/40 text-yellow-300 hover:border-yellow-400 shadow-[0_0_12px_rgba(234,179,8,0.25)]"
-            }`}
-            title="Alternar entre modo econômico (30% de brilho) e 100%"
-          >
-            {wakeLock.dimmed ? (
-              <>
-                <Moon className="w-3.5 h-3.5 text-amber-400" />
-                <span>Modo Eco (30%)</span>
-                <span className="text-[10px] text-amber-400/70 font-normal">Toque p/ 100%</span>
-              </>
-            ) : (
-              <>
-                <Sun className="w-3.5 h-3.5 text-yellow-400" />
-                <span>Brilho 100%</span>
-                <span className="text-[10px] text-yellow-400/70 font-normal">Toque p/ Eco (30%)</span>
-              </>
-            )}
-          </button>
-        </div>
-      )}
+      {/* ── POP-UP EXPLICATIVO PARA TOQUE CONTÍNUO (MOBILE) ── */}
+      <Dialog open={!!infoPopup} onOpenChange={(open) => !open && setInfoPopup(null)}>
+        <DialogContent className="max-w-xs sm:max-w-sm bg-[#0d1424] border border-[var(--dj-border)] text-white p-5 rounded-xl shadow-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-bold text-[var(--dj-cyan)] flex items-center gap-2">
+              <Info className="w-4 h-4 text-[var(--dj-cyan)] flex-none" />
+              <span>{infoPopup?.title}</span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="text-xs text-slate-300 leading-relaxed whitespace-pre-line mt-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+            {infoPopup?.description}
+          </div>
+          <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setInfoPopup(null)}
+              className="px-4 py-1.5 rounded bg-[var(--dj-cyan)] text-[#060a14] font-bold text-xs uppercase hover:brightness-110 transition-all cursor-pointer"
+            >
+              Entendi
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

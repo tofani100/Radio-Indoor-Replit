@@ -86,11 +86,38 @@ export function useWakeLock(isPlaying: boolean) {
     });
   }, []);
 
+  /** Cicla entre os 3 modos: Eco (30%) -> 100% -> Desligado -> Eco (30%) */
+  const cycleMode = useCallback(() => {
+    if (!enabled) {
+      // De Desligado -> Ativa Eco (30%)
+      setEnabled(true);
+      setDimmed(true);
+      localStorage.setItem("radio_indoor_wakelock_enabled", "true");
+      localStorage.setItem("radio_indoor_wakelock_dimmed", "true");
+    } else if (dimmed) {
+      // De Eco (30%) -> Ativa 100%
+      setEnabled(true);
+      setDimmed(false);
+      localStorage.setItem("radio_indoor_wakelock_enabled", "true");
+      localStorage.setItem("radio_indoor_wakelock_dimmed", "false");
+    } else {
+      // De 100% -> Desliga (Tela Normal)
+      setEnabled(false);
+      setDimmed(true);
+      localStorage.setItem("radio_indoor_wakelock_enabled", "false");
+      localStorage.setItem("radio_indoor_wakelock_dimmed", "true");
+    }
+  }, [enabled, dimmed]);
+
+  const mode = !enabled ? "off" : dimmed ? "eco" : "full";
+
   return {
     isSupported,
     isActive,
     enabled,
     dimmed,
+    mode,
+    cycleMode,
     toggleEnabled,
     toggleDimmed,
     setDimmed,
