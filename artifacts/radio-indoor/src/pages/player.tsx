@@ -15,7 +15,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import logoSrc from "@assets/LOGO_1777766957414.png";
 import { usePwaInstall } from "@/hooks/usePwaInstall";
 import { useWakeLock } from "@/hooks/useWakeLock";
-import { useLongPress } from "@/hooks/useLongPress";
 import { APP_VERSION, isDev, APP_DEV_VERSION, APP_PROD_VERSION } from "@/components/Layout";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
@@ -175,6 +174,31 @@ export default function PlayerPage() {
   const pwa = usePwaInstall();
   const wakeLock = useWakeLock(isPlaying);
   const qc = useQueryClient();
+  const [infoPopup, setInfoPopup] = useState<{ title: string; description: string } | null>(null);
+  const longPressTimerRef = useRef<any>(null);
+  const isLongPressActiveRef = useRef(false);
+
+  const handleTouchStart = useCallback((title: string, description: string) => {
+    isLongPressActiveRef.current = false;
+    if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressActiveRef.current = true;
+      setInfoPopup({ title, description });
+    }, 450);
+  }, []);
+
+  const handleTouchEnd = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+    };
+  }, []);
 
   // Fechar dropdown de modo ao clicar fora
   useEffect(() => {
@@ -1473,73 +1497,6 @@ export default function PlayerPage() {
     setTimeout(() => { void refetchQueue(); }, 50);
   };
 
-  const [infoPopup, setInfoPopup] = useState<{ title: string; description: string } | null>(null);
-
-  const longPressMode = useLongPress(
-    () => {
-      setInfoPopup({
-        title: "Ordem de Exibição",
-        description: `Define como as faixas da playlist são tocadas:\n\n• Aleatória: Músicas sorteadas aleatoriamente.\n• Sequencial: Músicas na ordem original cadastrada.\n\nModo ativo: ${effectivePlaybackMode === "shuffle" ? "Exibição Aleatória" : "Exibição Sequencial"}.\n\nToque rápido para abrir as opções.`,
-      });
-    },
-    () => {
-      setModeDropdownOpen((open) => !open);
-    }
-  );
-
-  const longPressStyle = useLongPress(
-    () => {
-      setInfoPopup({
-        title: "Trocar Estilo Musical",
-        description: `Permite selecionar o gênero musical ou álbuns temáticos para o seu ambiente.\n\nEstilo ativo: ${selectedStyleSummary}.\n\nToque rápido para abrir a lista de estilos.`,
-      });
-    },
-    () => {
-      setPlaylistModalOpen(true);
-    }
-  );
-
-  const longPressCommercial = useLongPress(
-    () => {
-      setInfoPopup({
-        title: "Grade Comercial",
-        description: `Permite escolher a grade de comerciais e locuções da loja.\n\nGrade ativa: ${currentCommercialName}.\n\nToque rápido para alterar.`,
-      });
-    },
-    () => {
-      setCommercialModalOpen(true);
-    }
-  );
-
-  const longPressWakeLock = useLongPress(
-    () => {
-      const statusDesc = !wakeLock.enabled
-        ? "Desativado (tela apaga conforme padrão do celular)"
-        : wakeLock.dimmed
-        ? "Modo Eco 30% (tela ativa e escurecida para economizar bateria)"
-        : "Brilho 100% (tela ativa com brilho normal)";
-      setInfoPopup({
-        title: "Controle de Tela & Brilho",
-        description: `Mantém a tela ligada para a música continuar tocando sem interrupção:\n\n• Modo Eco (30%): Reduz o brilho da tela para poupar bateria e evitar aquecimento no celular.\n• Brilho 100%: Mantém a tela ativa com brilho normal.\n• Desativado: A tela apaga no tempo padrão do aparelho.\n\nStatus atual: ${statusDesc}.\n\nToque rápido no ícone para alternar entre os modos.`,
-      });
-    },
-    () => {
-      wakeLock.cycleMode();
-    }
-  );
-
-  const longPressSwitchAccount = useLongPress(
-    () => {
-      setInfoPopup({
-        title: "Trocar Conta",
-        description: `Dispositivo conectado com o e-mail:\n${email}\n\nToque rápido para deslogar este aparelho e liberar o acesso.`,
-      });
-    },
-    () => {
-      void handleSwitchAccount();
-    }
-  );
-
   return (
     <div className="dj-console-scope min-h-screen lg:h-screen w-full flex flex-col p-2 sm:p-3 lg:p-4 gap-2 sm:gap-3 lg:gap-4 box-border overflow-y-auto lg:overflow-hidden select-none">
       {/* Top Header */}
@@ -1565,7 +1522,22 @@ export default function PlayerPage() {
             <button
               data-testid="button-toggle-playback-mode-mobile"
               type="button"
-              {...longPressMode}
+              onTouchStart={() =>
+                handleTouchStart(
+                  "Ordem de Exibição",
+                  `Define como as faixas da playlist são tocadas:\n\n• Aleatória: Músicas sorteadas aleatoriamente.\n• Sequencial: Músicas na ordem original cadastrada.\n\nModo ativo: ${effectivePlaybackMode === "shuffle" ? "Exibição Aleatória" : "Exibição Sequencial"}.\n\nToque rápido para abrir as opções.`
+                )
+              }
+              onTouchEnd={handleTouchEnd}
+              onTouchCancel={handleTouchEnd}
+              onContextMenu={(e) => e.preventDefault()}
+              onClick={(e) => {
+                if (isLongPressActiveRef.current) {
+                  e.preventDefault();
+                  return;
+                }
+                setModeDropdownOpen((open) => !open);
+              }}
               className="sm:hidden w-7 h-7 rounded border border-[var(--dj-cyan)] bg-[var(--dj-cyan-glow)] text-[var(--dj-cyan)] flex items-center justify-center transition-colors cursor-pointer"
               title="Ordem de Exibição (Toque contínuo para ajuda)"
               aria-label="Ordem de Exibição"
@@ -1655,7 +1627,22 @@ export default function PlayerPage() {
           <button
             data-testid="header-button-musical-mobile"
             type="button"
-            {...longPressStyle}
+            onTouchStart={() =>
+              handleTouchStart(
+                "Trocar Estilo Musical",
+                `Permite selecionar o gênero musical ou álbuns temáticos para o seu ambiente.\n\nEstilo ativo: ${selectedStyleSummary}.\n\nToque rápido para abrir a lista de estilos.`
+              )
+            }
+            onTouchEnd={handleTouchEnd}
+            onTouchCancel={handleTouchEnd}
+            onContextMenu={(e) => e.preventDefault()}
+            onClick={(e) => {
+              if (isLongPressActiveRef.current) {
+                e.preventDefault();
+                return;
+              }
+              setPlaylistModalOpen(true);
+            }}
             className="sm:hidden w-7 h-7 rounded border border-emerald-500 bg-emerald-500/15 text-emerald-300 flex items-center justify-center hover:bg-emerald-500 hover:text-[#060a14] transition-colors cursor-pointer shadow-sm"
             title={`Trocar Estilo Musical (${selectedStyleSummary} - toque contínuo para ajuda)`}
             aria-label="Trocar Estilo Musical"
@@ -1690,7 +1677,22 @@ export default function PlayerPage() {
               <button
                 data-testid="header-button-commercial-mobile"
                 type="button"
-                {...longPressCommercial}
+                onTouchStart={() =>
+                  handleTouchStart(
+                    "Grade Comercial",
+                    `Permite escolher a grade de comerciais e locuções da loja.\n\nGrade ativa: ${currentCommercialName}.\n\nToque rápido para alterar.`
+                  )
+                }
+                onTouchEnd={handleTouchEnd}
+                onTouchCancel={handleTouchEnd}
+                onContextMenu={(e) => e.preventDefault()}
+                onClick={(e) => {
+                  if (isLongPressActiveRef.current) {
+                    e.preventDefault();
+                    return;
+                  }
+                  setCommercialModalOpen(true);
+                }}
                 className="sm:hidden w-7 h-7 rounded border border-amber-500 bg-amber-500/15 text-amber-300 flex items-center justify-center hover:bg-amber-500 hover:text-[#060a14] transition-colors cursor-pointer shadow-sm"
                 title={`Grade Comercial (${currentCommercialName} - toque contínuo para ajuda)`}
                 aria-label="Grade Comercial"
@@ -1788,7 +1790,22 @@ export default function PlayerPage() {
             data-testid="button-switch-account-mobile"
             type="button"
             disabled={isSwitching}
-            {...longPressSwitchAccount}
+            onTouchStart={() =>
+              handleTouchStart(
+                "Trocar Conta",
+                `Dispositivo conectado com o e-mail:\n${email}\n\nToque rápido para deslogar este aparelho e liberar o acesso.`
+              )
+            }
+            onTouchEnd={handleTouchEnd}
+            onTouchCancel={handleTouchEnd}
+            onContextMenu={(e) => e.preventDefault()}
+            onClick={(e) => {
+              if (isLongPressActiveRef.current) {
+                e.preventDefault();
+                return;
+              }
+              void handleSwitchAccount();
+            }}
             className="sm:hidden w-7 h-7 rounded border border-[var(--dj-border)] bg-[var(--dj-bg)] text-[var(--dj-muted)] flex items-center justify-center hover:border-[var(--dj-magenta)] hover:text-[var(--dj-magenta)] transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
             title={`Trocar conta (${email}) e liberar acesso (toque contínuo para ajuda)`}
             aria-label="Trocar conta"
@@ -1801,7 +1818,27 @@ export default function PlayerPage() {
             <button
               data-testid="button-wakelock-mobile"
               type="button"
-              {...longPressWakeLock}
+              onTouchStart={() => {
+                const statusDesc = !wakeLock.enabled
+                  ? "Desativado (tela apaga conforme padrão do celular)"
+                  : wakeLock.dimmed
+                  ? "Modo Eco 30% (tela ativa e escurecida para economizar bateria)"
+                  : "Brilho 100% (tela ativa com brilho normal)";
+                handleTouchStart(
+                  "Controle de Tela & Brilho",
+                  `Mantém a tela ligada para a música continuar tocando sem interrupção:\n\n• Modo Eco (30%): Reduz o brilho da tela para poupar bateria e evitar aquecimento no celular.\n• Brilho 100%: Mantém a tela ativa com brilho normal.\n• Desativado: A tela apaga no tempo padrão do aparelho.\n\nStatus atual: ${statusDesc}.\n\nToque rápido no ícone para alternar entre os modos.`
+                );
+              }}
+              onTouchEnd={handleTouchEnd}
+              onTouchCancel={handleTouchEnd}
+              onContextMenu={(e) => e.preventDefault()}
+              onClick={(e) => {
+                if (isLongPressActiveRef.current) {
+                  e.preventDefault();
+                  return;
+                }
+                wakeLock.cycleMode();
+              }}
               className={`sm:hidden w-7 h-7 rounded border flex items-center justify-center transition-all cursor-pointer ${
                 wakeLock.mode === "eco"
                   ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.25)]"
