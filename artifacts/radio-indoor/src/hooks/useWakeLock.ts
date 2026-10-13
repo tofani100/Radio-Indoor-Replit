@@ -3,9 +3,14 @@ import { useEffect, useRef, useState, useCallback } from "react";
 export function useWakeLock(isPlaying: boolean) {
   const [isSupported, setIsSupported] = useState(false);
   const [enabled, setEnabled] = useState(() => {
-    if (typeof window === "undefined") return false;
+    if (typeof window === "undefined") return true;
     const saved = localStorage.getItem("radio_indoor_wakelock_enabled");
-    return saved !== null ? saved === "true" : false;
+    return saved !== null ? saved === "true" : true;
+  });
+  const [dimmed, setDimmed] = useState(() => {
+    if (typeof window === "undefined") return true;
+    const saved = localStorage.getItem("radio_indoor_wakelock_dimmed");
+    return saved !== null ? saved === "true" : true;
   });
   const [isActive, setIsActive] = useState(false);
   const sentinelRef = useRef<any>(null);
@@ -73,10 +78,21 @@ export function useWakeLock(isPlaying: boolean) {
     });
   }, []);
 
+  const toggleDimmed = useCallback(() => {
+    setDimmed((prev) => {
+      const next = !prev;
+      localStorage.setItem("radio_indoor_wakelock_dimmed", String(next));
+      return next;
+    });
+  }, []);
+
   return {
     isSupported,
     isActive,
     enabled,
+    dimmed,
     toggleEnabled,
+    toggleDimmed,
+    setDimmed,
   };
 }

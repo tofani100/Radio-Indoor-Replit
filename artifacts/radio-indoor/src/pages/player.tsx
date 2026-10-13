@@ -4,7 +4,7 @@ import {
   Clock, Music, Activity, Headphones, Hash, Mic2, SlidersHorizontal,
   Download, Share, CheckCircle2, X, ListMusic, ChevronDown, ArrowLeftRight, Shuffle,
   Building2, Globe, Disc3, Megaphone, ListOrdered, Check, Loader2,
-  Sun, SunDim,
+  Sun, SunDim, Moon,
 } from "lucide-react";
 import {
   useRegisterDevice, useGetPlaybackQueue, getGetPlaybackQueueQueryKey,
@@ -18,60 +18,7 @@ import { useWakeLock } from "@/hooks/useWakeLock";
 import { APP_VERSION, isDev, APP_DEV_VERSION, APP_PROD_VERSION } from "@/components/Layout";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { TimeLabel, RemainingLabel, ProgressSlider, VuMeter } from "@/components/PlayerClock";
 import "@/styles/dj-console.css";
-
-/**
- * Pré-carregamento de faixas: baixa o arquivo inteiro enquanto a faixa atual
- * toca e guarda como blob local. Quando a música termina, a próxima começa
- * instantaneamente da memória — sem rede e sem silêncio na troca, que é o
- * momento em que o celular com a tela apagada suspende a página.
- */
-const PREFETCH_CACHE_LIMIT = 3;
-const prefetchCache = new Map<string, string>(); // url original -> blob: URL
-const prefetchInFlight = new Map<string, Promise<string | null>>();
-
-function getPrefetchedSrc(url: string): string {
-  const blobUrl = prefetchCache.get(url);
-  if (!blobUrl) return url;
-  // Marca como usada recentemente (LRU)
-  prefetchCache.delete(url);
-  prefetchCache.set(url, blobUrl);
-  return blobUrl;
-}
-
-function prefetchTrack(url: string | undefined, protectedSrc?: string): Promise<string | null> {
-  if (!url || !/^https?:\/\//.test(url)) return Promise.resolve(null);
-  if (prefetchCache.has(url)) return Promise.resolve(prefetchCache.get(url)!);
-  const existing = prefetchInFlight.get(url);
-  if (existing) return existing;
-
-  const job = fetch(url, { mode: "cors", credentials: "omit" })
-    .then((res) => (res.ok ? res.blob() : null))
-    .then((blob) => {
-      if (!blob || blob.size === 0) return null;
-      const blobUrl = URL.createObjectURL(blob);
-      prefetchCache.set(url, blobUrl);
-      // Mantém no máximo N faixas em memória, sem nunca liberar a que está tocando
-      while (prefetchCache.size > PREFETCH_CACHE_LIMIT) {
-        const oldest = [...prefetchCache.entries()].find(([, b]) => b !== protectedSrc);
-        if (!oldest) break;
-        prefetchCache.delete(oldest[0]);
-        URL.revokeObjectURL(oldest[1]);
-      }
-      return blobUrl;
-    })
-    .catch((err) => {
-      console.warn("[Prefetch] Falha ao pré-carregar faixa (usará streaming):", err);
-      return null;
-    })
-    .finally(() => {
-      prefetchInFlight.delete(url);
-    });
-
-  prefetchInFlight.set(url, job);
-  return job;
-}
 
 function shuffleArray<T>(array: T[]): T[] {
   const arr = [...array];
@@ -183,7 +130,6 @@ function setStoredCommercialPlaylistIdForEmail(email: string, id: number) {
 
 type PlayerState = "gate" | "pending" | "duplicate" | "blocked" | "active";
 
-
 export default function PlayerPage() {
   const uuid = getOrCreateUUID();
   const [email, setEmail] = useState(getStoredEmail());
@@ -222,10 +168,11 @@ export default function PlayerPage() {
   const [shuffleCycle, setShuffleCycle] = useState(0);
   // Regra de negócio: O sistema deve sempre iniciar com a opção Exibição Aleatória ativada
   const [shuffleOverride, setShuffleOverride] = useState<boolean | null>(true);
-  // O tempo atual da faixa NÃO fica no estado da página (ver components/PlayerClock).
+  const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [iosHintOpen, setIosHintOpen] = useState(false);
   const pwa = usePwaInstall();
+  const wakeLock = useWakeLock(isPlaying);
   const qc = useQueryClient();
 
   // Fechar dropdown de modo ao clicar fora
@@ -251,104 +198,6 @@ export default function PlayerPage() {
   }, [playlistModalOpen, selectedPlaylistIds]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const wakeLock = useWakeLock(isPlaying);
-  const lastHeartbeatTimeRef = useRef(Date.now());
-  const isPlayingRef = useRef(false);
-  const onTrackEndedRef = useRef<() => void>(() => {});
-  const onTrackErrorRef = useRef<() => void>(() => {});
-  const hasEndedHandledRef = useRef(false);
-  const triggerAudioClockHeartbeatRef = useRef<() => void>(() => {});
-  const resumeOrAdvanceRef = useRef<() => void>(() => {});
-  /** URL original (não-blob) da faixa carregada no elemento de áudio */
-  const loadedTrackUrlRef = useRef<string>("");
-
-  // Informa ao sistema (tela de bloqueio) a posição da faixa. O próprio SO
-  // extrapola o avanço a partir do playbackRate, então basta chamar em eventos.
-  const syncPositionState = useCallback((a: HTMLAudioElement) => {
-    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
-    if (!("setPositionState" in navigator.mediaSession)) return;
-    if (!Number.isFinite(a.duration) || a.duration <= 0) return;
-    try {
-      navigator.mediaSession.setPositionState({
-        duration: a.duration,
-        playbackRate: a.playbackRate || 1,
-        position: Math.max(0, Math.min(a.duration, a.currentTime || 0)),
-      });
-    } catch { /* ignore */ }
-  }, []);
-
-  const getOrCreateAudio = useCallback((): HTMLAudioElement => {
-    if (!audioRef.current) {
-      const audio = new Audio();
-      audio.preload = "auto";
-
-      // Leve: nenhum setState por tick — só libera o indicador de buffer e o heartbeat.
-      audio.addEventListener("timeupdate", () => {
-        if (audio.currentTime > 0.1 && isBufferingRef.current) {
-          setIsBuffering(false);
-          isBufferingRef.current = false;
-        }
-        triggerAudioClockHeartbeatRef.current();
-      });
-
-      audio.addEventListener("loadedmetadata", () => {
-        if (Number.isFinite(audio.duration) && audio.duration > 0) {
-          setDuration(audio.duration);
-        }
-        syncPositionState(audio);
-      });
-
-      audio.addEventListener("playing", () => {
-        setIsBuffering(false);
-        isBufferingRef.current = false;
-        consecutiveErrorsRef.current = 0;
-        setLoadError(null);
-        if ("mediaSession" in navigator) {
-          navigator.mediaSession.playbackState = "playing";
-        }
-        syncPositionState(audio);
-      });
-
-      audio.addEventListener("seeked", () => syncPositionState(audio));
-
-      audio.addEventListener("waiting", () => {
-        setIsBuffering(true);
-        isBufferingRef.current = true;
-      });
-
-      audio.addEventListener("canplay", () => {
-        setIsBuffering(false);
-        isBufferingRef.current = false;
-      });
-
-      audio.addEventListener("ended", () => {
-        setIsBuffering(false);
-        isBufferingRef.current = false;
-        if (!hasEndedHandledRef.current) {
-          hasEndedHandledRef.current = true;
-          onTrackEndedRef.current();
-        }
-      });
-
-      audio.addEventListener("error", () => {
-        setIsBuffering(false);
-        isBufferingRef.current = false;
-        // Ignora o "erro" gerado ao esvaziar a fonte de propósito (troca de playlist)
-        if (!audio.getAttribute("src")) return;
-        onTrackErrorRef.current();
-      });
-
-      audioRef.current = audio;
-    }
-    return audioRef.current;
-  }, [syncPositionState]);
-
-
-  useEffect(() => {
-    isPlayingRef.current = isPlaying;
-  }, [isPlaying]);
-
-
   const skipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const consecutiveErrorsRef = useRef(0);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -749,162 +598,45 @@ export default function PlayerPage() {
     return (scheduledItems || []).filter((i) => i.type === "jingle" || i.type === "voiceover").length;
   }, [scheduledItems, queue?.jingleMode, jinglesPool]);
 
-  const handleHeartbeatResponse = useCallback((res: any) => {
-    if (res?.status === "duplicate") {
-      setPlayerState("duplicate");
-      if (audioRef.current) {
-        try { audioRef.current.pause(); } catch {}
-      }
-      setIsPlaying(false);
-    } else if (res?.status === "blocked") {
-      setPlayerState("blocked");
-      if (audioRef.current) {
-        try { audioRef.current.pause(); } catch {}
-      }
-      setIsPlaying(false);
-    } else if (res?.status === "disconnected" || (res?.success === false && res?.status !== "active")) {
-      setPlayerState("gate");
-      if (audioRef.current) {
-        try { audioRef.current.pause(); } catch {}
-      }
-      setIsPlaying(false);
-      toast({
-        title: "Terminal desconectado",
-        description: "Sua conexão foi liberada ou desconectada pelo painel administrativo.",
-        variant: "destructive",
-      });
-    }
-  }, []);
-
-  const triggerAudioClockHeartbeat = useCallback(() => {
-    const now = Date.now();
-    if (now - lastHeartbeatTimeRef.current >= 15000 && playerState === "active" && email) {
-      lastHeartbeatTimeRef.current = now;
-      heartbeat.mutate(
-        { data: { uuid, email } },
-        { onSuccess: handleHeartbeatResponse }
-      );
-    }
-  }, [playerState, email, uuid, heartbeat, handleHeartbeatResponse]);
-
-  triggerAudioClockHeartbeatRef.current = triggerAudioClockHeartbeat;
-
-  // Heartbeat a cada 15s via setInterval para estações normais
+  // Heartbeat every 15 seconds to maintain reliable presence and rapid duplicate session detection
   useEffect(() => {
     if (playerState !== "active" || !email) return;
-    heartbeat.mutate({ data: { uuid, email } }, { onSuccess: handleHeartbeatResponse });
+    heartbeat.mutate({ data: { uuid, email } });
     const id = setInterval(() => {
-      lastHeartbeatTimeRef.current = Date.now();
-      heartbeat.mutate({ data: { uuid, email } }, { onSuccess: handleHeartbeatResponse });
+      heartbeat.mutate(
+        { data: { uuid, email } },
+        {
+          onSuccess: (res: any) => {
+            if (res?.status === "duplicate") {
+              setPlayerState("duplicate");
+              if (audioRef.current) {
+                try { audioRef.current.pause(); } catch {}
+              }
+              setIsPlaying(false);
+            } else if (res?.status === "blocked") {
+              setPlayerState("blocked");
+              if (audioRef.current) {
+                try { audioRef.current.pause(); } catch {}
+              }
+              setIsPlaying(false);
+            } else if (res?.status === "disconnected" || (res?.success === false && res?.status !== "active")) {
+              setPlayerState("gate");
+              if (audioRef.current) {
+                try { audioRef.current.pause(); } catch {}
+              }
+              setIsPlaying(false);
+              toast({
+                title: "Terminal desconectado",
+                description: "Sua conexão foi liberada ou desconectada pelo painel administrativo.",
+                variant: "destructive",
+              });
+            }
+          },
+        }
+      );
     }, 15 * 1000);
     return () => clearInterval(id);
-  }, [playerState, email, uuid, heartbeat, handleHeartbeatResponse]);
-
-  const playTrackRef = useRef<(idx: number, resumeAt?: number) => void>(() => {});
-
-  // Atualiza MediaSession nativa para a tela de bloqueio e central de notificações
-  const updateMediaSession = useCallback(
-    (item: { title: string; artist?: string | null; type?: string; coverUrl?: string | null } | null) => {
-      if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
-      if (!item) return;
-
-      const isCommercial = item.type === "jingle" || item.type === "voiceover";
-      const title = item.title;
-      const artist = item.artist || (isCommercial ? "Locução / Vinheta" : "Rádio Indoor");
-      const album = queue?.clientName || "Play Comunique";
-      const artwork = item.coverUrl
-        ? [
-            { src: item.coverUrl, sizes: "96x96", type: "image/png" },
-            { src: item.coverUrl, sizes: "192x192", type: "image/png" },
-            { src: item.coverUrl, sizes: "512x512", type: "image/png" },
-          ]
-        : [
-            { src: "/pwa-192x192.png", sizes: "192x192", type: "image/png" },
-            { src: "/pwa-512x512.png", sizes: "512x512", type: "image/png" },
-          ];
-
-      try {
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title,
-          artist,
-          album,
-          artwork,
-        });
-
-        navigator.mediaSession.playbackState = "playing";
-
-        navigator.mediaSession.setActionHandler("play", () => {
-          const a = getOrCreateAudio();
-          a.play().catch(() => {});
-          setIsPlaying(true);
-          isPlayingRef.current = true;
-          if ("mediaSession" in navigator) {
-            navigator.mediaSession.playbackState = "playing";
-          }
-        });
-        navigator.mediaSession.setActionHandler("pause", () => {
-          const a = getOrCreateAudio();
-          a.pause();
-          setIsPlaying(false);
-          isPlayingRef.current = false;
-          if ("mediaSession" in navigator) {
-            navigator.mediaSession.playbackState = "paused";
-          }
-        });
-        navigator.mediaSession.setActionHandler("nexttrack", () => {
-          const list = scheduledItemsRef.current;
-          if (list.length > 0) {
-            const next = (currentIdxRef.current + 1) % list.length;
-            playTrackRef.current(next);
-          }
-        });
-        navigator.mediaSession.setActionHandler("previoustrack", () => {
-          const list = scheduledItemsRef.current;
-          if (list.length > 0) {
-            const prev = (currentIdxRef.current - 1 + list.length) % list.length;
-            playTrackRef.current(prev);
-          }
-        });
-        try {
-          navigator.mediaSession.setActionHandler("seekto", (details) => {
-            if (details.seekTime !== undefined && audioRef.current) {
-              audioRef.current.currentTime = details.seekTime;
-              syncPositionState(audioRef.current);
-            }
-          });
-        } catch {}
-      } catch (e) {
-        console.warn("[MediaSession] Falha ao registrar action handlers:", e);
-      }
-    },
-    [queue?.clientName, getOrCreateAudio, syncPositionState]
-  );
-
-  // Sincroniza áudio e heartbeat ao retornar à aba (desbloqueio do celular)
-  useEffect(() => {
-    const handleVisChange = () => {
-      if (document.visibilityState === "visible") {
-        const a = audioRef.current;
-        if (a) {
-          if (Number.isFinite(a.duration) && a.duration > 0) {
-            setDuration(a.duration);
-          }
-          if (isPlayingRef.current && a.paused && !a.ended) {
-            a.play().catch(() => {});
-          }
-          if (isPlayingRef.current && a.ended && !hasEndedHandledRef.current) {
-            hasEndedHandledRef.current = true;
-            onTrackEndedRef.current();
-          }
-        }
-        if (playerState === "active" && email) {
-          triggerAudioClockHeartbeatRef.current();
-        }
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisChange);
-    return () => document.removeEventListener("visibilitychange", handleVisChange);
-  }, [playerState, email]);
+  }, [playerState, email, uuid]);
 
   // Apply volume/mute to the live <audio> element whenever they change.
   useEffect(() => {
@@ -924,7 +656,6 @@ export default function PlayerPage() {
   const handleStart = () => {
     setStarted(true);
     setIsPlaying(true);
-    isPlayingRef.current = true;
     playTrack(currentIdx);
   };
 
@@ -933,7 +664,7 @@ export default function PlayerPage() {
   const currentItem = currentJingle ?? scheduledItems[currentIdx] ?? null;
 
   const playTrack = useCallback((idx: number, resumeAt: number = 0) => {
-    const items = scheduledItemsRef.current;
+    const items = scheduledItems;
     if (!items || !items[idx]) return;
     const track = items[idx];
     currentIdxRef.current = idx;
@@ -941,6 +672,18 @@ export default function PlayerPage() {
     playingTrackIdRef.current = track.id;
     setPlayingTrackId(track.id);
 
+    // Stop any previous audio and clear pending error timer to avoid
+    // overlapping skip-chains when several tracks 404 in a row.
+    if (audioRef.current) {
+      audioRef.current.onended = null;
+      audioRef.current.onerror = null;
+      audioRef.current.onplaying = null;
+      audioRef.current.oncanplay = null;
+      audioRef.current.onwaiting = null;
+      audioRef.current.onloadstart = null;
+      try { audioRef.current.pause(); } catch { /* ignore */ }
+      audioRef.current.src = "";
+    }
     if (skipTimerRef.current) {
       clearTimeout(skipTimerRef.current);
       skipTimerRef.current = null;
@@ -952,25 +695,19 @@ export default function PlayerPage() {
     setCurrentJingle(null);
     inJingleRef.current = false;
     resumeMusicIdxRef.current = null;
-    hasEndedHandledRef.current = false;
 
     setIsBuffering(true);
     isBufferingRef.current = true;
 
-    // Reaproveita o elemento de áudio persistente único desbloqueado pelo usuário
-    const audio = getOrCreateAudio();
-
+    const audio = new Audio(track.url);
+    audio.preload = "auto";
     const vol = effectiveVolume(track.type);
     audio.volume = vol;
     audio.muted = muted || vol <= 0.001;
+    audioRef.current = audio;
+    setCurrentTime(resumeAt);
+    // Exibe imediatamente a duração conhecida no modelo da faixa para evitar 00:00 / 00:00
     setDuration(track.duration && Number.isFinite(track.duration) && track.duration > 0 ? track.duration : 0);
-
-    const actualSrc = getPrefetchedSrc(track.url);
-    if (loadedTrackUrlRef.current !== track.url || audio.src !== actualSrc) {
-      loadedTrackUrlRef.current = track.url;
-      audio.src = actualSrc;
-      audio.load();
-    }
 
     if (resumeAt > 0) {
       const trySeek = () => {
@@ -979,30 +716,104 @@ export default function PlayerPage() {
       audio.addEventListener("loadedmetadata", trySeek, { once: true });
     }
 
-    audio.play().then(() => {
+    audio.onloadstart = () => {
+      setIsBuffering(true);
+      isBufferingRef.current = true;
+    };
+
+    audio.onwaiting = () => {
+      setIsBuffering(true);
+      isBufferingRef.current = true;
+    };
+
+    audio.oncanplay = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
+    };
+
+    audio.play().catch((err) => {
+      console.error("Falha ao tocar áudio:", track.url, err);
+    });
+
+    let hasLoggedTrack = false;
+    audio.onplaying = () => {
       setIsBuffering(false);
       isBufferingRef.current = false;
       consecutiveErrorsRef.current = 0;
       setLoadError(null);
-      logPlayback.mutate({ data: { mediaId: track.id, uuid, email } });
-      updateMediaSession(track);
-    }).catch((err) => {
-      console.error("Falha ao tocar áudio:", track.url, err);
-    });
+      if (!hasLoggedTrack) {
+        hasLoggedTrack = true;
+        logPlayback.mutate({ data: { mediaId: track.id, uuid, email } });
+      }
+
+      // Preload do próximo áudio no cache do navegador para transição instantânea
+      try {
+        const currentList = scheduledItemsRef.current;
+        if (currentList.length > 1) {
+          const nextIdx = (idx + 1) % currentList.length;
+          const nextTrack = currentList[nextIdx];
+          if (nextTrack?.url) {
+            const preloader = new Audio();
+            preloader.preload = "auto";
+            preloader.src = nextTrack.url;
+          }
+        }
+      } catch {}
+    };
+
+    audio.onloadedmetadata = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        setDuration(audio.duration);
+      }
+    };
+
+    audio.ontimeupdate = () => {
+      setCurrentTime(audio.currentTime);
+      if (audio.currentTime > 0.1 && isBufferingRef.current) {
+        setIsBuffering(false);
+        isBufferingRef.current = false;
+      }
+    };
+
+    audio.onended = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
+      const currentList = scheduledItemsRef.current;
+      if (!currentList.length) return;
+      const next = (idx + 1) % currentList.length;
+      if (next === 0 && effectivePlaybackMode === "shuffle") {
+        setShuffleCycle((c) => c + 1);
+      }
+      playTrack(next);
+    };
+
+    audio.onerror = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
+      console.error("Erro carregando áudio:", track.url);
+      consecutiveErrorsRef.current += 1;
+      // If we have looped through every item without a single successful
+      // play, stop trying. Otherwise the player races through 404s forever.
+      if (consecutiveErrorsRef.current >= items.length) {
+        setIsPlaying(false);
+        setLoadError(
+          "Nenhum dos arquivos da playlist pode ser carregado. " +
+          "As mídias podem ter sido removidas do servidor — peça ao administrador para reenviá-las.",
+        );
+        return;
+      }
+      skipTimerRef.current = setTimeout(() => {
+        skipTimerRef.current = null;
+        const currentList = scheduledItemsRef.current;
+        if (!currentList.length) return;
+        const next = (idx + 1) % currentList.length;
+        playTrack(next);
+      }, 1500);
+    };
 
     setIsPlaying(true);
-    isPlayingRef.current = true;
-
-    // Pré-carrega a PRÓXIMA faixa enquanto a atual toca
-    const nextIdx = (idx + 1) % items.length;
-    const nextTrack = items[nextIdx];
-    if (nextTrack?.url && nextTrack.url !== track.url) {
-      prefetchTrack(nextTrack.url, audio.src);
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uuid, email, effectiveVolume, getOrCreateAudio, logPlayback, muted, updateMediaSession]);
-
-  playTrackRef.current = playTrack;
+  }, [scheduledItems, uuid, email, effectivePlaybackMode]);
 
   // Modo "time": interrompe a música atual pra tocar 1 locução. Ao terminar
   // a locução, RETOMA a mesma música do ponto onde parou — só avança pra
@@ -1011,21 +822,30 @@ export default function PlayerPage() {
   const playJingleInterrupt = useCallback((targetJingle?: QueueItem) => {
     if (inJingleRef.current) return;
     if (jinglesPool.length === 0) return;
-    const items = scheduledItemsRef.current;
-    if (!items.length) return;
+    if (!scheduledItems.length) return;
     const jingle = targetJingle ?? jinglesPool[jingleCycleRef.current % jinglesPool.length]!;
     if (!targetJingle) {
       jingleCycleRef.current += 1;
     }
 
     // Captura posição atual da música pra retomar depois
-    const audio = getOrCreateAudio();
-    const prevTime = audio.currentTime ?? 0;
-    const prevDuration = (Number.isFinite(audio.duration)) ? audio.duration : 0;
-    resumeMusicIdxRef.current = currentIdxRef.current;
+    const prevAudio = audioRef.current;
+    const prevTime = prevAudio?.currentTime ?? 0;
+    const prevDuration = (prevAudio && Number.isFinite(prevAudio.duration)) ? prevAudio.duration : 0;
+    resumeMusicIdxRef.current = currentIdx;
     resumeMusicTimeRef.current = prevTime;
     resumeMusicDurationRef.current = prevDuration;
 
+    if (prevAudio) {
+      prevAudio.onended = null;
+      prevAudio.onerror = null;
+      prevAudio.onplaying = null;
+      prevAudio.oncanplay = null;
+      prevAudio.onwaiting = null;
+      prevAudio.onloadstart = null;
+      try { prevAudio.pause(); } catch { /* ignore */ }
+      prevAudio.src = "";
+    }
     if (skipTimerRef.current) {
       clearTimeout(skipTimerRef.current);
       skipTimerRef.current = null;
@@ -1033,7 +853,6 @@ export default function PlayerPage() {
     clearTimeModeTimers();
 
     inJingleRef.current = true;
-    hasEndedHandledRef.current = false;
     setCurrentJingle({
       id: jingle.id,
       title: jingle.title,
@@ -1046,107 +865,103 @@ export default function PlayerPage() {
     setIsBuffering(true);
     isBufferingRef.current = true;
 
+    const audio = new Audio(jingle.url);
+    audio.preload = "auto";
     const vol = effectiveVolume(jingle.type || "voiceover");
     audio.volume = vol;
     audio.muted = muted || vol <= 0.001;
+    audioRef.current = audio;
+    setCurrentTime(0);
     setDuration(jingle.duration && Number.isFinite(jingle.duration) && jingle.duration > 0 ? jingle.duration : 0);
 
-    const actualSrc = getPrefetchedSrc(jingle.url);
-    if (loadedTrackUrlRef.current !== jingle.url || audio.src !== actualSrc) {
-      loadedTrackUrlRef.current = jingle.url;
-      audio.src = actualSrc;
-      audio.load();
-    }
-
-    audio.play().then(() => {
+    audio.onloadstart = () => {
+      setIsBuffering(true);
+      isBufferingRef.current = true;
+    };
+    audio.onwaiting = () => {
+      setIsBuffering(true);
+      isBufferingRef.current = true;
+    };
+    audio.oncanplay = () => {
       setIsBuffering(false);
       isBufferingRef.current = false;
-      logPlayback.mutate({ data: { mediaId: jingle.id, uuid, email } });
-      updateMediaSession(jingle);
-    }).catch((err) => {
+    };
+
+    audio.play().catch((err) => {
       console.error("Falha ao tocar locução:", jingle.url, err);
-      resumeOrAdvanceRef.current();
     });
 
+    audio.onloadedmetadata = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        setDuration(audio.duration);
+      }
+    };
+
+    audio.ontimeupdate = () => {
+      setCurrentTime(audio.currentTime);
+      if (audio.currentTime > 0.1 && isBufferingRef.current) {
+        setIsBuffering(false);
+        isBufferingRef.current = false;
+      }
+    };
+
+    const resumeOrAdvance = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
+      // Garante que o estado de "em locução" seja limpo mesmo se algo abaixo
+      // der curto-circuito (queue vazia, idx inválido, etc).
+      setCurrentJingle(null);
+      inJingleRef.current = false;
+      const items = scheduledItems;
+      if (!items || items.length === 0) {
+        // Queue ficou vazia durante a locução — para o player.
+        if (audioRef.current) {
+          try { audioRef.current.pause(); } catch { /* ignore */ }
+        }
+        setIsPlaying(false);
+        return;
+      }
+      const safeIdx = ((resumeMusicIdxRef.current ?? currentIdx) % items.length + items.length) % items.length;
+      const resumeTime = resumeMusicTimeRef.current ?? 0;
+      const resumeDuration = resumeMusicDurationRef.current ?? 0;
+      const sameTrackStillExists = items[safeIdx] != null;
+      const remaining = resumeDuration > 0 ? resumeDuration - resumeTime : Infinity;
+      if (sameTrackStillExists && resumeDuration > 0 && remaining < RESUME_THRESHOLD_S) {
+        // Quase no fim: pula pra próxima música.
+        const next = (safeIdx + 1) % items.length;
+        setCurrentIdx(next);
+        playTrack(next, 0);
+      } else if (sameTrackStillExists) {
+        // Retoma a MESMA música do ponto onde a locução interrompeu.
+        playTrack(safeIdx, resumeTime);
+      } else {
+        // Track sumiu da queue — toca o item no índice ajustado do zero.
+        playTrack(safeIdx, 0);
+      }
+    };
+
+    let hasLoggedJingle = false;
+    audio.onplaying = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
+      if (!hasLoggedJingle) {
+        hasLoggedJingle = true;
+        logPlayback.mutate({ data: { mediaId: jingle.id, uuid, email } });
+      }
+    };
+
+    audio.onended = () => {
+      resumeOrAdvance();
+    };
+
+    audio.onerror = () => {
+      console.error("Erro carregando locução:", jingle.url);
+      resumeOrAdvance();
+    };
+
     setIsPlaying(true);
-    isPlayingRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jinglesPool, muted, uuid, email, effectiveVolume, getOrCreateAudio, logPlayback, updateMediaSession]);
-
-  const resumeOrAdvance = useCallback(() => {
-    setIsBuffering(false);
-    isBufferingRef.current = false;
-    setCurrentJingle(null);
-    inJingleRef.current = false;
-    hasEndedHandledRef.current = false;
-    const items = scheduledItemsRef.current;
-    if (!items || items.length === 0) {
-      if (audioRef.current) {
-        try { audioRef.current.pause(); } catch { /* ignore */ }
-      }
-      setIsPlaying(false);
-      isPlayingRef.current = false;
-      return;
-    }
-    const safeIdx = ((resumeMusicIdxRef.current ?? currentIdxRef.current) % items.length + items.length) % items.length;
-    const resumeTime = resumeMusicTimeRef.current ?? 0;
-    const resumeDuration = resumeMusicDurationRef.current ?? 0;
-    const remaining = resumeDuration > 0 ? resumeDuration - resumeTime : Infinity;
-    if (resumeDuration > 0 && remaining < RESUME_THRESHOLD_S) {
-      // Quase no fim: pula pra próxima música.
-      const next = (safeIdx + 1) % items.length;
-      playTrackRef.current(next, 0);
-    } else {
-      // Retoma a MESMA música do ponto onde a locução interrompeu.
-      playTrackRef.current(safeIdx, resumeTime);
-    }
-  }, [RESUME_THRESHOLD_S]);
-
-  resumeOrAdvanceRef.current = resumeOrAdvance;
-
-  const handleTrackEnded = useCallback(() => {
-    if (inJingleRef.current) {
-      resumeOrAdvanceRef.current();
-    } else {
-      const currentList = scheduledItemsRef.current;
-      if (!currentList.length) return;
-      const next = (currentIdxRef.current + 1) % currentList.length;
-      if (next === 0 && effectivePlaybackMode === "shuffle") {
-        setShuffleCycle((c) => c + 1);
-      }
-      playTrackRef.current(next);
-    }
-  }, [effectivePlaybackMode]);
-
-  onTrackEndedRef.current = handleTrackEnded;
-
-  const handleTrackError = useCallback(() => {
-    setIsBuffering(false);
-    isBufferingRef.current = false;
-    if (inJingleRef.current) {
-      resumeOrAdvanceRef.current();
-      return;
-    }
-    const items = scheduledItemsRef.current;
-    consecutiveErrorsRef.current += 1;
-    if (consecutiveErrorsRef.current >= items.length) {
-      setIsPlaying(false);
-      isPlayingRef.current = false;
-      setLoadError(
-        "Nenhum dos arquivos da playlist pode ser carregado. As mídias podem ter sido removidas do servidor — peça ao administrador para reenviá-las."
-      );
-      return;
-    }
-    skipTimerRef.current = setTimeout(() => {
-      skipTimerRef.current = null;
-      const currentList = scheduledItemsRef.current;
-      if (!currentList.length) return;
-      const next = (currentIdxRef.current + 1) % currentList.length;
-      playTrackRef.current(next);
-    }, 1500);
-  }, []);
-
-  onTrackErrorRef.current = handleTrackError;
+  }, [jinglesPool, scheduledItems, currentIdx, muted, uuid, email, playTrack]);
 
   // Faz fade-out gradual do volume da música atual ao longo de FADE_OUT_MS.
   const startFadeOut = useCallback(() => {
@@ -1227,7 +1042,7 @@ export default function PlayerPage() {
     const a = audioRef.current;
     if (a && Number.isFinite(a.duration) && a.duration > 0) {
       a.currentTime = Math.max(0, Math.min(a.duration, value));
-      syncPositionState(a);
+      setCurrentTime(a.currentTime);
     }
   };
 
@@ -1240,7 +1055,7 @@ export default function PlayerPage() {
 
   const handlePlayPause = () => {
     if (!started) { handleStart(); return; }
-    const a = getOrCreateAudio();
+    if (!audioRef.current) return;
     if (isBufferingRef.current) {
       toast({
         title: "Conectando áudio...",
@@ -1248,22 +1063,12 @@ export default function PlayerPage() {
       });
       return;
     }
-    if (isPlaying) {
-      a.pause();
-      setIsPlaying(false);
-      isPlayingRef.current = false;
-      if ("mediaSession" in navigator) {
-        navigator.mediaSession.playbackState = "paused";
-      }
-    } else {
-      a.play().catch((err) => {
+    if (isPlaying) { audioRef.current.pause(); setIsPlaying(false); }
+    else {
+      audioRef.current.play().catch((err) => {
         console.error("Erro ao retomar áudio:", err);
       });
       setIsPlaying(true);
-      isPlayingRef.current = true;
-      if ("mediaSession" in navigator) {
-        navigator.mediaSession.playbackState = "playing";
-      }
     }
   };
 
@@ -1628,20 +1433,18 @@ export default function PlayerPage() {
 
     // Stop current audio cleanly
     if (audioRef.current) {
+      audioRef.current.onended = null;
+      audioRef.current.onerror = null;
+      audioRef.current.onplaying = null;
       try { audioRef.current.pause(); } catch { /* ignore */ }
       audioRef.current.src = "";
-    }
-    if ("mediaSession" in navigator) {
-      navigator.mediaSession.playbackState = "paused";
     }
     clearTimeModeTimers();
     setCurrentJingle(null);
     inJingleRef.current = false;
     resumeMusicIdxRef.current = null;
-    hasEndedHandledRef.current = false;
     setCurrentIdx(0);
     setIsPlaying(false);
-    isPlayingRef.current = false;
     setStarted(false);
     setLoadError(null);
     consecutiveErrorsRef.current = 0;
@@ -1880,7 +1683,7 @@ export default function PlayerPage() {
             <ArrowLeftRight className="w-3.5 h-3.5" />
           </button>
 
-          {/* ── MOBILE: manter tela ligada (opcional) ── */}
+          {/* ── MOBILE: manter tela ligada (com modo eco 30%) ── */}
           {wakeLock.isSupported && (
             <button
               data-testid="button-wakelock-mobile"
@@ -1888,13 +1691,25 @@ export default function PlayerPage() {
               onClick={wakeLock.toggleEnabled}
               className={`sm:hidden w-7 h-7 rounded border flex items-center justify-center transition-colors cursor-pointer ${
                 wakeLock.enabled
-                  ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.2)]"
+                  ? wakeLock.dimmed
+                    ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.2)]"
+                    : "bg-yellow-500/20 border-yellow-500/50 text-yellow-300 shadow-[0_0_8px_rgba(234,179,8,0.2)]"
                   : "bg-[var(--dj-bg)] border-[var(--dj-border)] text-[var(--dj-muted)] hover:text-[var(--dj-text)]"
               }`}
-              title={wakeLock.enabled ? "Manter tela ligada: Ativado (toque para desligar)" : "Manter tela ligada: Desativado (toque para ativar)"}
+              title={
+                wakeLock.enabled
+                  ? wakeLock.dimmed
+                    ? "Tela Ligada (Modo Eco 30%): Ativado para economizar bateria. Toque para desligar."
+                    : "Tela Ligada (100% Brilho): Ativado. Toque para desligar."
+                  : "Manter tela ligada: Desativado (o display apagará sozinho). Toque para ativar."
+              }
               aria-label="Alternar manter tela ligada"
             >
-              {wakeLock.enabled ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <SunDim className="w-3.5 h-3.5" />}
+              {wakeLock.enabled ? (
+                wakeLock.dimmed ? <Moon className="w-3.5 h-3.5 text-amber-400" /> : <Sun className="w-3.5 h-3.5 text-yellow-400" />
+              ) : (
+                <SunDim className="w-3.5 h-3.5" />
+              )}
             </button>
           )}
 
@@ -1906,14 +1721,26 @@ export default function PlayerPage() {
               onClick={wakeLock.toggleEnabled}
               className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider border transition-all cursor-pointer ${
                 wakeLock.enabled
-                  ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.2)]"
+                  ? wakeLock.dimmed
+                    ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.2)]"
+                    : "bg-yellow-500/20 border-yellow-500/50 text-yellow-300 shadow-[0_0_10px_rgba(234,179,8,0.2)]"
                   : "bg-[var(--dj-bg)] border-[var(--dj-border)] text-[var(--dj-muted)] hover:text-[var(--dj-text)]"
               }`}
-              title={wakeLock.enabled ? "Manter tela ligada: Ativado (a tela do dispositivo não apagará sozinha)" : "Manter tela ligada: Desativado (o display apagará conforme o timeout do sistema)"}
+              title={
+                wakeLock.enabled
+                  ? wakeLock.dimmed
+                    ? "Tela Ligada (Modo Eco 30%): Mantém a tela ativa e economiza bateria. Toque para desligar."
+                    : "Tela Ligada (100%): Mantém a tela ativa em brilho normal. Toque para desligar."
+                  : "Manter tela ligada: Desativado. Toque para ativar."
+              }
               aria-label="Alternar manter tela ligada"
             >
-              {wakeLock.enabled ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <SunDim className="w-3.5 h-3.5" />}
-              <span>Tela {wakeLock.enabled ? "Ativa" : "Normal"}</span>
+              {wakeLock.enabled ? (
+                wakeLock.dimmed ? <Moon className="w-3.5 h-3.5 text-amber-400" /> : <Sun className="w-3.5 h-3.5 text-yellow-400" />
+              ) : (
+                <SunDim className="w-3.5 h-3.5" />
+              )}
+              <span>{wakeLock.enabled ? (wakeLock.dimmed ? "Tela Eco 30%" : "Tela 100%") : "Tela Normal"}</span>
             </button>
           )}
 
@@ -2050,12 +1877,12 @@ export default function PlayerPage() {
               {/* Time */}
               <div className="flex items-center gap-1 flex-none">
                 {isBuffering && <Loader2 className="w-2.5 h-2.5 text-amber-400 animate-spin" />}
-                <TimeLabel audioRef={audioRef} duration={duration} className="text-[11px] dj-mono text-[var(--dj-muted)]" />
+                <span className="text-[11px] dj-mono text-[var(--dj-muted)]">{fmtMMSS(currentTime)} / {fmtMMSS(duration)}</span>
               </div>
             </div>
             {/* Progress bar */}
             <div className="px-3 pb-2">
-              <ProgressSlider audioRef={audioRef} duration={duration} onSeek={handleSeek} />
+              <input data-testid="slider-progress" type="range" min={0} max={duration || 1} step={0.01} value={currentTime} disabled={!duration} onChange={(e) => handleSeek(parseFloat(e.target.value))} aria-label="Posição da faixa" className="dj-progress" />
             </div>
           </div>
 
@@ -2073,7 +1900,7 @@ export default function PlayerPage() {
                   <span>Status de Reprodução</span>
                 )}
               </span>
-              <TimeLabel audioRef={audioRef} duration={duration} className="dj-mono text-[var(--dj-cyan)]" />
+              <span className="dj-mono text-[var(--dj-cyan)]">{fmtMMSS(currentTime)} / {fmtMMSS(duration)}</span>
             </h2>
             <div className="flex-1 flex flex-col items-center justify-center text-center px-2 min-h-0">
               <div className="w-44 h-44 rounded-full bg-[#0a0f1a] border-4 border-[var(--dj-border)] shadow-[0_0_40px_rgba(0,240,255,0.1)] flex items-center justify-center mb-5 relative overflow-hidden flex-none">
@@ -2106,9 +1933,22 @@ export default function PlayerPage() {
               )}
             </div>
             <div className="mt-4 flex-none">
-              <ProgressSlider audioRef={audioRef} duration={duration} onSeek={handleSeek} />
+              <input data-testid="slider-progress" type="range" min={0} max={duration || 1} step={0.01} value={currentTime} disabled={!duration} onChange={(e) => handleSeek(parseFloat(e.target.value))} aria-label="Posição da faixa" className="dj-progress" />
             </div>
-            <VuMeter audioRef={audioRef} duration={duration} isPlaying={isPlaying} itemType={currentItem?.type} />
+            <div className="h-12 mt-3 flex items-end gap-[2px] w-full opacity-80 flex-none">
+              {Array.from({ length: 40 }).map((_, i) => {
+                const ratio = duration > 0 ? currentTime / duration : 0;
+                const isActive = i / 40 < ratio;
+                const height = 20 + Math.sin(i * 0.5) * 15 + (i * 7 % 17);
+                const activeColor =
+                  currentItem?.type === "jingle"
+                    ? "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]"
+                    : currentItem?.type === "voiceover"
+                    ? "bg-[var(--dj-magenta)] shadow-[0_0_8px_var(--dj-magenta)]"
+                    : "bg-[var(--dj-cyan)] shadow-[0_0_8px_var(--dj-cyan)]";
+                return <div key={i} className={`flex-1 rounded-t-sm transition-colors duration-200 ${isActive ? activeColor : "bg-[var(--dj-accent)]"} ${isPlaying && isActive ? `dj-vu-bar dj-vu-${(i % 12) + 1}` : ""}`} style={{ height: `${height}%` }} />;
+              })}
+            </div>
           </div>
 
           {/* Transport Controls */}
@@ -2315,13 +2155,9 @@ export default function PlayerPage() {
                         </p>
                       </div>
                       <div className="text-[10px] dj-mono text-[var(--dj-muted)] flex-none">
-                        {isCurrent && duration > 0 ? (
-                          <RemainingLabel audioRef={audioRef} duration={duration} />
-                        ) : item.duration ? (
-                          fmtMMSS(item.duration)
-                        ) : (
-                          "—"
-                        )}
+                        {isCurrent && duration > 0
+                          ? `-${fmtMMSS(Math.max(0, duration - currentTime))}`
+                          : item.duration ? fmtMMSS(item.duration) : "—"}
                       </div>
                     </div>
                   );
@@ -2674,6 +2510,46 @@ export default function PlayerPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* ── MODO ECO: Escurecimento a 30% de brilho para economizar bateria e evitar aquecimento no celular ── */}
+      {wakeLock.enabled && wakeLock.dimmed && (
+        <div
+          data-testid="wakelock-dim-overlay"
+          className="fixed inset-0 pointer-events-none z-30 transition-opacity duration-300 bg-black/70"
+          aria-hidden="true"
+        />
+      )}
+
+      {/* ── BADGE FLUTUANTE DE CONTROLE DE BRILHO (quando Manter Tela Ligada está ativo) ── */}
+      {wakeLock.enabled && (
+        <div className="fixed bottom-3 right-3 z-40 flex items-center shadow-xl">
+          <button
+            data-testid="button-wakelock-toggle-dim"
+            type="button"
+            onClick={wakeLock.toggleDimmed}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold backdrop-blur-md border transition-all cursor-pointer ${
+              wakeLock.dimmed
+                ? "bg-[#0a0f1d]/90 border-amber-500/40 text-amber-300 hover:border-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.25)]"
+                : "bg-[#0a0f1d]/90 border-yellow-500/40 text-yellow-300 hover:border-yellow-400 shadow-[0_0_12px_rgba(234,179,8,0.25)]"
+            }`}
+            title="Alternar entre modo econômico (30% de brilho) e 100%"
+          >
+            {wakeLock.dimmed ? (
+              <>
+                <Moon className="w-3.5 h-3.5 text-amber-400" />
+                <span>Modo Eco (30%)</span>
+                <span className="text-[10px] text-amber-400/70 font-normal">Toque p/ 100%</span>
+              </>
+            ) : (
+              <>
+                <Sun className="w-3.5 h-3.5 text-yellow-400" />
+                <span>Brilho 100%</span>
+                <span className="text-[10px] text-yellow-400/70 font-normal">Toque p/ Eco (30%)</span>
+              </>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
