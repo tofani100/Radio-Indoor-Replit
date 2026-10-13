@@ -4,7 +4,7 @@ import {
   Clock, Music, Activity, Headphones, Hash, Mic2, SlidersHorizontal,
   Download, Share, CheckCircle2, X, ListMusic, ChevronDown, ArrowLeftRight, Shuffle,
   Building2, Globe, Disc3, Megaphone, ListOrdered, Check, Loader2,
-  Sun, SunDim, Moon, Info,
+  Info,
 } from "lucide-react";
 import {
   useRegisterDevice, useGetPlaybackQueue, getGetPlaybackQueueQueryKey,
@@ -1813,85 +1813,6 @@ export default function PlayerPage() {
             <ArrowLeftRight className="w-3.5 h-3.5" />
           </button>
 
-          {/* ── MOBILE: manter tela ligada (com ciclo Eco 30% / 100% / Desligado e toque contínuo para ajuda) ── */}
-          {wakeLock.isSupported && (
-            <button
-              data-testid="button-wakelock-mobile"
-              type="button"
-              onTouchStart={() => {
-                const statusDesc = !wakeLock.enabled
-                  ? "Desativado (tela apaga conforme padrão do celular)"
-                  : wakeLock.dimmed
-                  ? "Modo Eco 30% (tela ativa e escurecida para economizar bateria)"
-                  : "Brilho 100% (tela ativa com brilho normal)";
-                handleTouchStart(
-                  "Controle de Tela & Brilho",
-                  `Mantém a tela ligada para a música continuar tocando sem interrupção:\n\n• Modo Eco (30%): Reduz o brilho da tela para poupar bateria e evitar aquecimento no celular.\n• Brilho 100%: Mantém a tela ativa com brilho normal.\n• Desativado: A tela apaga no tempo padrão do aparelho.\n\nStatus atual: ${statusDesc}.\n\nToque rápido no ícone para alternar entre os modos.`
-                );
-              }}
-              onTouchEnd={handleTouchEnd}
-              onTouchCancel={handleTouchEnd}
-              onContextMenu={(e) => e.preventDefault()}
-              onClick={(e) => {
-                if (isLongPressActiveRef.current) {
-                  e.preventDefault();
-                  return;
-                }
-                wakeLock.cycleMode();
-              }}
-              className={`sm:hidden w-7 h-7 rounded border flex items-center justify-center transition-all cursor-pointer ${
-                wakeLock.mode === "eco"
-                  ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.25)]"
-                  : wakeLock.mode === "full"
-                  ? "bg-yellow-500/20 border-yellow-500/50 text-yellow-300 shadow-[0_0_8px_rgba(234,179,8,0.25)]"
-                  : "bg-[var(--dj-bg)] border-[var(--dj-border)] text-[var(--dj-muted)] hover:text-[var(--dj-text)]"
-              }`}
-              title={
-                wakeLock.mode === "eco"
-                  ? "Tela Eco (30% Brilho) Ativo. Toque para 100% ou segure para ajuda."
-                  : wakeLock.mode === "full"
-                  ? "Tela 100% Brilho Ativo. Toque para desligar ou segure para ajuda."
-                  : "Tela Normal. Toque para ativar Modo Eco (30%) ou segure para ajuda."
-              }
-              aria-label="Controle de tela e brilho"
-            >
-              {wakeLock.mode === "eco" ? (
-                <Moon className="w-3.5 h-3.5 text-amber-400" />
-              ) : wakeLock.mode === "full" ? (
-                <Sun className="w-3.5 h-3.5 text-yellow-400" />
-              ) : (
-                <SunDim className="w-3.5 h-3.5" />
-              )}
-            </button>
-          )}
-
-          {/* ── DESKTOP: manter tela ligada (com ciclo de 3 modos) ── */}
-          {wakeLock.isSupported && (
-            <button
-              data-testid="button-wakelock-desktop"
-              type="button"
-              onClick={wakeLock.cycleMode}
-              className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider border transition-all cursor-pointer ${
-                wakeLock.mode === "eco"
-                  ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.2)]"
-                  : wakeLock.mode === "full"
-                  ? "bg-yellow-500/20 border-yellow-500/50 text-yellow-300 shadow-[0_0_10px_rgba(234,179,8,0.2)]"
-                  : "bg-[var(--dj-bg)] border-[var(--dj-border)] text-[var(--dj-muted)] hover:text-[var(--dj-text)]"
-              }`}
-              title="Alternar: Modo Eco (30%) -> Brilho 100% -> Tela Normal"
-              aria-label="Alternar manter tela ligada"
-            >
-              {wakeLock.mode === "eco" ? (
-                <Moon className="w-3.5 h-3.5 text-amber-400" />
-              ) : wakeLock.mode === "full" ? (
-                <Sun className="w-3.5 h-3.5 text-yellow-400" />
-              ) : (
-                <SunDim className="w-3.5 h-3.5" />
-              )}
-              <span>{wakeLock.mode === "eco" ? "Tela Eco 30%" : wakeLock.mode === "full" ? "Tela 100%" : "Tela Normal"}</span>
-            </button>
-          )}
-
           {/* ── DESKTOP: instalar app (com texto) ── */}
           {pwa.installed ? (
             <div
@@ -2659,14 +2580,14 @@ export default function PlayerPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ── MODO ECO: Escurecimento a 30% de brilho para economizar bateria e evitar aquecimento no celular ── */}
-      {wakeLock.enabled && wakeLock.dimmed && (
-        <div
-          data-testid="wakelock-dim-overlay"
-          className="fixed inset-0 pointer-events-none z-30 transition-opacity duration-300 bg-black/70"
-          aria-hidden="true"
-        />
-      )}
+      {/* ── AUTO-DIM MODO ECO: Escurece suavemente para 20% de brilho após inatividade (evita desligamento e economiza bateria) ── */}
+      <div
+        data-testid="wakelock-dim-overlay"
+        className={`fixed inset-0 pointer-events-none z-30 transition-opacity duration-1000 ease-in-out bg-black/80 ${
+          wakeLock.isDimmed ? "opacity-100" : "opacity-0"
+        }`}
+        aria-hidden="true"
+      />
 
       {/* ── POP-UP EXPLICATIVO PARA TOQUE CONTÍNUO (MOBILE) ── */}
       <Dialog open={!!infoPopup} onOpenChange={(open) => !open && setInfoPopup(null)}>

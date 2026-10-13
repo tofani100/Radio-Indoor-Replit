@@ -1,27 +1,23 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 
+const INACTIVITY_TIMEOUT_MS = 15000; // 15 segundos sem uso para iniciar o escurecimento automático
+
 export function useWakeLock(isPlaying: boolean) {
   const [isSupported, setIsSupported] = useState(false);
-  const [enabled, setEnabled] = useState(() => {
-    if (typeof window === "undefined") return true;
-    const saved = localStorage.getItem("radio_indoor_wakelock_enabled");
-    return saved !== null ? saved === "true" : true;
-  });
-  const [dimmed, setDimmed] = useState(() => {
-    if (typeof window === "undefined") return true;
-    const saved = localStorage.getItem("radio_indoor_wakelock_dimmed");
-    return saved !== null ? saved === "true" : true;
-  });
   const [isActive, setIsActive] = useState(false);
+  const [isDimmed, setIsDimmed] = useState(false);
+
   const sentinelRef = useRef<any>(null);
+  const inactivityTimerRef = useRef<any>(null);
 
   useEffect(() => {
     setIsSupported(typeof navigator !== "undefined" && "wakeLock" in navigator);
   }, []);
 
+  // Adquire o Wake Lock automaticamente para impedir o celular de apagar completamente
   const requestWakeLock = useCallback(async () => {
     if (typeof navigator === "undefined" || !("wakeLock" in navigator)) return;
-    if (!enabled || !isPlaying) return;
+    if (!isPlaying) return;
     if (sentinelRef.current && !sentinelRef.current.released) return;
 
     try {
@@ -36,7 +32,7 @@ export function useWakeLock(isPlaying: boolean) {
       console.warn("[WakeLock] Não foi possível adquirir Wake Lock:", err);
       setIsActive(false);
     }
-  }, [enabled, isPlaying]);
+  }, [isPlaying]);
 
   const releaseWakeLock = useCallback(() => {
     if (sentinelRef.current) {
@@ -48,19 +44,20 @@ export function useWakeLock(isPlaying: boolean) {
     setIsActive(false);
   }, []);
 
-  // Adquirir quando tocando e ativado; liberar caso contrário
+  // Mantém a tela ligada em segundo plano enquanto toca
   useEffect(() => {
-    if (isPlaying && enabled) {
+    if (isPlaying) {
       requestWakeLock();
     } else {
       releaseWakeLock();
+      setIsDimmed(false);
     }
-  }, [isPlaying, enabled, requestWakeLock, releaseWakeLock]);
+  }, [isPlaying, requestWakeLock, releaseWakeLock]);
 
-  // Re-adquirir no evento visibilitychange se a página voltar a ficar visível
+  // Re-adquire se a aba voltar a ficar visível
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible" && isPlaying && enabled) {
+      if (document.visibilityState === "visible" && isPlaying) {
         requestWakeLock();
       }
     };
@@ -68,58 +65,69 @@ export function useWakeLock(isPlaying: boolean) {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [isPlaying, enabled, requestWakeLock]);
+  }, [isPlaying, requestWakeLock]);
 
-  const toggleEnabled = useCallback(() => {
-    setEnabled((prev) => {
-      const next = !prev;
-      localStorage.setItem("radio_indoor_wakelock_enabled", String(next));
-      return next;
-    });
-  }, []);
-
-  const toggleDimmed = useCallback(() => {
-    setDimmed((prev) => {
-      const next = !prev;
-      localStorage.setItem("radio_indoor_wakelock_dimmed", String(next));
-      return next;
-    });
-  }, []);
-
-  /** Cicla entre os 3 modos: Eco (30%) -> 100% -> Desligado -> Eco (30%) */
-  const cycleMode = useCallback(() => {
-    if (!enabled) {
-      // De Desligado -> Ativa Eco (30%)
-      setEnabled(true);
-      setDimmed(true);
-      localStorage.setItem("radio_indoor_wakelock_enabled", "true");
-      localStorage.setItem("radio_indoor_wakelock_dimmed", "true");
-    } else if (dimmed) {
-      // De Eco (30%) -> Ativa 100%
-      setEnabled(true);
-      setDimmed(false);
-      localStorage.setItem("radio_indoor_wakelock_enabled", "true");
-      localStorage.setItem("radio_indoor_wakelock_dimmed", "false");
-    } else {
-      // De 100% -> Desliga (Tela Normal)
-      setEnabled(false);
-      setDimmed(true);
-      localStorage.setItem("radio_indoor_wakelock_enabled", "false");
-      localStorage.setItem("radio_indoor_wakelock_dimmed", "true");
+  // Gerenciamento de inatividade: após 15s sem toque/interação, escurece suavemente para 20%
+  const resetInactivity = useCallback(() => {
+    setIsDimmed(false);
+    if (inactivityTimerRef.current) {
+      clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = null;
     }
-  }, [enabled, dimmed]);
+    if (isPlaying) {
+      inactivityTimerRef.current = setTimeout(() => {
+        setIsDimmed(true);
+      }, INACTIVITY_TIMEOUT_MS);
+    }
+  }, [isPlaying]);
 
-  const mode = !enabled ? "off" : dimmed ? "eco" : "full";
+  useEffect(() => {
+    if (!isPlaying) {
+      setIsDimmed(false);
+      if (inactivityTimerRef.current) {
+        clearTimeout(inactivityTimerRef.current);
+        inactivityTimerRef.current = null;
+      }
+      return;
+    }
+
+    // Inicia o timer inicial
+    resetInactivity();
+
+    // Ouvintes de atividade do usuário (toque no celular, clique, movimento)
+    const activityEvents = [
+      "touchstart",
+      "touchmove",
+      "touchend",
+      "pointerdown",
+      "mousedown",
+      "keydown",
+      "scroll",
+    ];
+
+    const onUserActivity = () => {
+      resetInactivity();
+    };
+
+    activityEvents.forEach((evt) => {
+      window.addEventListener(evt, onUserActivity, { passive: true });
+    });
+
+    return () => {
+      if (inactivityTimerRef.current) {
+        clearTimeout(inactivityTimerRef.current);
+        inactivityTimerRef.current = null;
+      }
+      activityEvents.forEach((evt) => {
+        window.removeEventListener(evt, onUserActivity);
+      });
+    };
+  }, [isPlaying, resetInactivity]);
 
   return {
     isSupported,
     isActive,
-    enabled,
-    dimmed,
-    mode,
-    cycleMode,
-    toggleEnabled,
-    toggleDimmed,
-    setDimmed,
+    isDimmed,
+    resetInactivity,
   };
 }
