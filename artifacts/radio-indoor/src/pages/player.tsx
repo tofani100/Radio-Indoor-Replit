@@ -4,6 +4,7 @@ import {
   Clock, Music, Activity, Headphones, Hash, Mic2, SlidersHorizontal,
   Download, Share, CheckCircle2, X, ListMusic, ChevronDown, ArrowLeftRight, Shuffle,
   Building2, Globe, Disc3, Megaphone, ListOrdered, Check, Loader2,
+  Sun, SunDim,
 } from "lucide-react";
 import {
   useRegisterDevice, useGetPlaybackQueue, getGetPlaybackQueueQueryKey,
@@ -13,6 +14,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import logoSrc from "@assets/LOGO_1777766957414.png";
 import { usePwaInstall } from "@/hooks/usePwaInstall";
+import { useWakeLock } from "@/hooks/useWakeLock";
 import { APP_VERSION, isDev, APP_DEV_VERSION, APP_PROD_VERSION } from "@/components/Layout";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
@@ -128,6 +130,58 @@ function setStoredCommercialPlaylistIdForEmail(email: string, id: number) {
 
 type PlayerState = "gate" | "pending" | "duplicate" | "blocked" | "active";
 
+class SilentAudioKeepalive {
+  private ctx: AudioContext | null = null;
+  private oscillator: OscillatorNode | null = null;
+  private isRunning = false;
+
+  start() {
+    if (this.isRunning) return;
+    try {
+      const AudioContextClass = typeof window !== "undefined"
+        ? (window.AudioContext || (window as any).webkitAudioContext)
+        : null;
+      if (!AudioContextClass) return;
+
+      if (!this.ctx || this.ctx.state === "closed") {
+        this.ctx = new AudioContextClass();
+      }
+      if (this.ctx.state === "suspended") {
+        this.ctx.resume().catch(() => {});
+      }
+
+      const gainNode = this.ctx.createGain();
+      gainNode.gain.value = 0.00001; // Inaudível para o ouvido humano, mas mantém ativo o subsistema de áudio no SO
+      gainNode.connect(this.ctx.destination);
+
+      const osc = this.ctx.createOscillator();
+      osc.frequency.value = 20;
+      osc.connect(gainNode);
+      osc.start();
+      this.oscillator = osc;
+      this.isRunning = true;
+    } catch (e) {
+      console.warn("[Keepalive] Não foi possível iniciar AudioContext silencioso:", e);
+    }
+  }
+
+  stop() {
+    if (!this.isRunning) return;
+    try {
+      if (this.oscillator) {
+        this.oscillator.stop();
+        this.oscillator.disconnect();
+        this.oscillator = null;
+      }
+      if (this.ctx && this.ctx.state !== "closed") {
+        this.ctx.close().catch(() => {});
+        this.ctx = null;
+      }
+    } catch {}
+    this.isRunning = false;
+  }
+}
+
 export default function PlayerPage() {
   const uuid = getOrCreateUUID();
   const [email, setEmail] = useState(getStoredEmail());
@@ -195,6 +249,25 @@ export default function PlayerPage() {
   }, [playlistModalOpen, selectedPlaylistIds]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const wakeLock = useWakeLock(isPlaying);
+  const silentKeepaliveRef = useRef(new SilentAudioKeepalive());
+  const lastHeartbeatTimeRef = useRef(Date.now());
+
+  const getOrCreateAudio = useCallback((): HTMLAudioElement => {
+    if (!audioRef.current) {
+      const audio = new Audio();
+      audio.preload = "auto";
+      audioRef.current = audio;
+    }
+    return audioRef.current;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      silentKeepaliveRef.current.stop();
+    };
+  }, []);
+
   const skipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const consecutiveErrorsRef = useRef(0);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -595,45 +668,127 @@ export default function PlayerPage() {
     return (scheduledItems || []).filter((i) => i.type === "jingle" || i.type === "voiceover").length;
   }, [scheduledItems, queue?.jingleMode, jinglesPool]);
 
-  // Heartbeat every 15 seconds to maintain reliable presence and rapid duplicate session detection
-  useEffect(() => {
-    if (playerState !== "active" || !email) return;
-    heartbeat.mutate({ data: { uuid, email } });
-    const id = setInterval(() => {
+  const handleHeartbeatResponse = useCallback((res: any) => {
+    if (res?.status === "duplicate") {
+      setPlayerState("duplicate");
+      if (audioRef.current) {
+        try { audioRef.current.pause(); } catch {}
+      }
+      setIsPlaying(false);
+      silentKeepaliveRef.current.stop();
+    } else if (res?.status === "blocked") {
+      setPlayerState("blocked");
+      if (audioRef.current) {
+        try { audioRef.current.pause(); } catch {}
+      }
+      setIsPlaying(false);
+      silentKeepaliveRef.current.stop();
+    } else if (res?.status === "disconnected" || (res?.success === false && res?.status !== "active")) {
+      setPlayerState("gate");
+      if (audioRef.current) {
+        try { audioRef.current.pause(); } catch {}
+      }
+      setIsPlaying(false);
+      silentKeepaliveRef.current.stop();
+      toast({
+        title: "Terminal desconectado",
+        description: "Sua conexão foi liberada ou desconectada pelo painel administrativo.",
+        variant: "destructive",
+      });
+    }
+  }, []);
+
+  const triggerAudioClockHeartbeat = useCallback(() => {
+    const now = Date.now();
+    if (now - lastHeartbeatTimeRef.current >= 15000 && playerState === "active" && email) {
+      lastHeartbeatTimeRef.current = now;
       heartbeat.mutate(
         { data: { uuid, email } },
-        {
-          onSuccess: (res: any) => {
-            if (res?.status === "duplicate") {
-              setPlayerState("duplicate");
-              if (audioRef.current) {
-                try { audioRef.current.pause(); } catch {}
-              }
-              setIsPlaying(false);
-            } else if (res?.status === "blocked") {
-              setPlayerState("blocked");
-              if (audioRef.current) {
-                try { audioRef.current.pause(); } catch {}
-              }
-              setIsPlaying(false);
-            } else if (res?.status === "disconnected" || (res?.success === false && res?.status !== "active")) {
-              setPlayerState("gate");
-              if (audioRef.current) {
-                try { audioRef.current.pause(); } catch {}
-              }
-              setIsPlaying(false);
-              toast({
-                title: "Terminal desconectado",
-                description: "Sua conexão foi liberada ou desconectada pelo painel administrativo.",
-                variant: "destructive",
-              });
-            }
-          },
-        }
+        { onSuccess: handleHeartbeatResponse }
       );
+    }
+  }, [playerState, email, uuid, heartbeat, handleHeartbeatResponse]);
+
+  // Heartbeat a cada 15s via setInterval para estações normais
+  useEffect(() => {
+    if (playerState !== "active" || !email) return;
+    heartbeat.mutate({ data: { uuid, email } }, { onSuccess: handleHeartbeatResponse });
+    const id = setInterval(() => {
+      lastHeartbeatTimeRef.current = Date.now();
+      heartbeat.mutate({ data: { uuid, email } }, { onSuccess: handleHeartbeatResponse });
     }, 15 * 1000);
     return () => clearInterval(id);
-  }, [playerState, email, uuid]);
+  }, [playerState, email, uuid, heartbeat, handleHeartbeatResponse]);
+
+  // Sincroniza heartbeat no retorno da aba (desbloqueio do celular)
+  useEffect(() => {
+    const handleVisChange = () => {
+      if (document.visibilityState === "visible" && playerState === "active" && email) {
+        triggerAudioClockHeartbeat();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisChange);
+    return () => document.removeEventListener("visibilitychange", handleVisChange);
+  }, [playerState, email, triggerAudioClockHeartbeat]);
+
+  const playTrackRef = useRef<(idx: number, resumeAt?: number) => void>(() => {});
+
+  // Atualiza MediaSession nativa para a tela de bloqueio e central de notificações
+  const updateMediaSession = useCallback(
+    (item: { title: string; artist?: string | null; type?: string; coverUrl?: string | null } | null) => {
+      if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
+      if (!item) return;
+
+      const isCommercial = item.type === "jingle" || item.type === "voiceover";
+      const title = item.title;
+      const artist = item.artist || (isCommercial ? "Locução / Vinheta" : "Rádio Indoor");
+      const album = queue?.clientName || "Play Comunique";
+      const artwork = item.coverUrl
+        ? [{ src: item.coverUrl, sizes: "512x512", type: "image/png" }]
+        : [{ src: "/pwa-512x512.png", sizes: "512x512", type: "image/png" }];
+
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title,
+          artist,
+          album,
+          artwork,
+        });
+
+        navigator.mediaSession.setActionHandler("play", () => {
+          if (audioRef.current) {
+            silentKeepaliveRef.current.start();
+            audioRef.current.play().catch(() => {});
+            setIsPlaying(true);
+          }
+        });
+        navigator.mediaSession.setActionHandler("pause", () => {
+          if (audioRef.current) {
+            audioRef.current.pause();
+            setIsPlaying(false);
+            silentKeepaliveRef.current.stop();
+          }
+        });
+        navigator.mediaSession.setActionHandler("nexttrack", () => {
+          const list = scheduledItemsRef.current;
+          if (list.length > 0) {
+            const next = (currentIdxRef.current + 1) % list.length;
+            playTrackRef.current(next);
+          }
+        });
+        navigator.mediaSession.setActionHandler("previoustrack", () => {
+          const list = scheduledItemsRef.current;
+          if (list.length > 0) {
+            const prev = (currentIdxRef.current - 1 + list.length) % list.length;
+            playTrackRef.current(prev);
+          }
+        });
+      } catch (e) {
+        console.warn("[MediaSession] Falha ao registrar action handlers:", e);
+      }
+    },
+    [queue?.clientName]
+  );
 
   // Apply volume/mute to the live <audio> element whenever they change.
   useEffect(() => {
@@ -653,6 +808,7 @@ export default function PlayerPage() {
   const handleStart = () => {
     setStarted(true);
     setIsPlaying(true);
+    silentKeepaliveRef.current.start();
     playTrack(currentIdx);
   };
 
@@ -669,18 +825,6 @@ export default function PlayerPage() {
     playingTrackIdRef.current = track.id;
     setPlayingTrackId(track.id);
 
-    // Stop any previous audio and clear pending error timer to avoid
-    // overlapping skip-chains when several tracks 404 in a row.
-    if (audioRef.current) {
-      audioRef.current.onended = null;
-      audioRef.current.onerror = null;
-      audioRef.current.onplaying = null;
-      audioRef.current.oncanplay = null;
-      audioRef.current.onwaiting = null;
-      audioRef.current.onloadstart = null;
-      try { audioRef.current.pause(); } catch { /* ignore */ }
-      audioRef.current.src = "";
-    }
     if (skipTimerRef.current) {
       clearTimeout(skipTimerRef.current);
       skipTimerRef.current = null;
@@ -696,14 +840,25 @@ export default function PlayerPage() {
     setIsBuffering(true);
     isBufferingRef.current = true;
 
-    const audio = new Audio(track.url);
+    // Reaproveita o elemento de áudio persistente único desbloqueado pelo usuário
+    const audio = getOrCreateAudio();
+    audio.onended = null;
+    audio.onerror = null;
+    audio.onplaying = null;
+    audio.oncanplay = null;
+    audio.onwaiting = null;
+    audio.onloadstart = null;
+    audio.ontimeupdate = null;
+    audio.onloadedmetadata = null;
+
+    if (audio.src !== track.url) {
+      audio.src = track.url;
+    }
     audio.preload = "auto";
     const vol = effectiveVolume(track.type);
     audio.volume = vol;
     audio.muted = muted || vol <= 0.001;
-    audioRef.current = audio;
     setCurrentTime(resumeAt);
-    // Exibe imediatamente a duração conhecida no modelo da faixa para evitar 00:00 / 00:00
     setDuration(track.duration && Number.isFinite(track.duration) && track.duration > 0 ? track.duration : 0);
 
     if (resumeAt > 0) {
@@ -728,6 +883,8 @@ export default function PlayerPage() {
       isBufferingRef.current = false;
     };
 
+    silentKeepaliveRef.current.start();
+
     audio.play().catch((err) => {
       console.error("Falha ao tocar áudio:", track.url, err);
     });
@@ -742,6 +899,7 @@ export default function PlayerPage() {
         hasLoggedTrack = true;
         logPlayback.mutate({ data: { mediaId: track.id, uuid, email } });
       }
+      updateMediaSession(track);
 
       // Preload do próximo áudio no cache do navegador para transição instantânea
       try {
@@ -770,6 +928,7 @@ export default function PlayerPage() {
         setIsBuffering(false);
         isBufferingRef.current = false;
       }
+      triggerAudioClockHeartbeat();
     };
 
     audio.onended = () => {
@@ -789,8 +948,6 @@ export default function PlayerPage() {
       isBufferingRef.current = false;
       console.error("Erro carregando áudio:", track.url);
       consecutiveErrorsRef.current += 1;
-      // If we have looped through every item without a single successful
-      // play, stop trying. Otherwise the player races through 404s forever.
       if (consecutiveErrorsRef.current >= items.length) {
         setIsPlaying(false);
         setLoadError(
@@ -810,7 +967,9 @@ export default function PlayerPage() {
 
     setIsPlaying(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scheduledItems, uuid, email, effectivePlaybackMode]);
+  }, [scheduledItems, uuid, email, effectivePlaybackMode, effectiveVolume, getOrCreateAudio, logPlayback, muted, triggerAudioClockHeartbeat, updateMediaSession]);
+
+  playTrackRef.current = playTrack;
 
   // Modo "time": interrompe a música atual pra tocar 1 locução. Ao terminar
   // a locução, RETOMA a mesma música do ponto onde parou — só avança pra
@@ -826,23 +985,13 @@ export default function PlayerPage() {
     }
 
     // Captura posição atual da música pra retomar depois
-    const prevAudio = audioRef.current;
-    const prevTime = prevAudio?.currentTime ?? 0;
-    const prevDuration = (prevAudio && Number.isFinite(prevAudio.duration)) ? prevAudio.duration : 0;
+    const audio = getOrCreateAudio();
+    const prevTime = audio.currentTime ?? 0;
+    const prevDuration = (Number.isFinite(audio.duration)) ? audio.duration : 0;
     resumeMusicIdxRef.current = currentIdx;
     resumeMusicTimeRef.current = prevTime;
     resumeMusicDurationRef.current = prevDuration;
 
-    if (prevAudio) {
-      prevAudio.onended = null;
-      prevAudio.onerror = null;
-      prevAudio.onplaying = null;
-      prevAudio.oncanplay = null;
-      prevAudio.onwaiting = null;
-      prevAudio.onloadstart = null;
-      try { prevAudio.pause(); } catch { /* ignore */ }
-      prevAudio.src = "";
-    }
     if (skipTimerRef.current) {
       clearTimeout(skipTimerRef.current);
       skipTimerRef.current = null;
@@ -862,12 +1011,23 @@ export default function PlayerPage() {
     setIsBuffering(true);
     isBufferingRef.current = true;
 
-    const audio = new Audio(jingle.url);
+    // Reutiliza o mesmo elemento de áudio persistente
+    audio.onended = null;
+    audio.onerror = null;
+    audio.onplaying = null;
+    audio.oncanplay = null;
+    audio.onwaiting = null;
+    audio.onloadstart = null;
+    audio.ontimeupdate = null;
+    audio.onloadedmetadata = null;
+
+    if (audio.src !== jingle.url) {
+      audio.src = jingle.url;
+    }
     audio.preload = "auto";
     const vol = effectiveVolume(jingle.type || "voiceover");
     audio.volume = vol;
     audio.muted = muted || vol <= 0.001;
-    audioRef.current = audio;
     setCurrentTime(0);
     setDuration(jingle.duration && Number.isFinite(jingle.duration) && jingle.duration > 0 ? jingle.duration : 0);
 
@@ -883,6 +1043,8 @@ export default function PlayerPage() {
       setIsBuffering(false);
       isBufferingRef.current = false;
     };
+
+    silentKeepaliveRef.current.start();
 
     audio.play().catch((err) => {
       console.error("Falha ao tocar locução:", jingle.url, err);
@@ -900,6 +1062,7 @@ export default function PlayerPage() {
         setIsBuffering(false);
         isBufferingRef.current = false;
       }
+      triggerAudioClockHeartbeat();
     };
 
     const resumeOrAdvance = () => {
@@ -921,19 +1084,15 @@ export default function PlayerPage() {
       const safeIdx = ((resumeMusicIdxRef.current ?? currentIdx) % items.length + items.length) % items.length;
       const resumeTime = resumeMusicTimeRef.current ?? 0;
       const resumeDuration = resumeMusicDurationRef.current ?? 0;
-      const sameTrackStillExists = items[safeIdx] != null;
       const remaining = resumeDuration > 0 ? resumeDuration - resumeTime : Infinity;
-      if (sameTrackStillExists && resumeDuration > 0 && remaining < RESUME_THRESHOLD_S) {
+      if (resumeDuration > 0 && remaining < RESUME_THRESHOLD_S) {
         // Quase no fim: pula pra próxima música.
         const next = (safeIdx + 1) % items.length;
         setCurrentIdx(next);
         playTrack(next, 0);
-      } else if (sameTrackStillExists) {
+      } else {
         // Retoma a MESMA música do ponto onde a locução interrompeu.
         playTrack(safeIdx, resumeTime);
-      } else {
-        // Track sumiu da queue — toca o item no índice ajustado do zero.
-        playTrack(safeIdx, 0);
       }
     };
 
@@ -945,6 +1104,7 @@ export default function PlayerPage() {
         hasLoggedJingle = true;
         logPlayback.mutate({ data: { mediaId: jingle.id, uuid, email } });
       }
+      updateMediaSession(jingle);
     };
 
     audio.onended = () => {
@@ -958,7 +1118,7 @@ export default function PlayerPage() {
 
     setIsPlaying(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jinglesPool, scheduledItems, currentIdx, muted, uuid, email, playTrack]);
+  }, [jinglesPool, scheduledItems, currentIdx, muted, uuid, email, playTrack, effectiveVolume, getOrCreateAudio, logPlayback, triggerAudioClockHeartbeat, updateMediaSession]);
 
   // Faz fade-out gradual do volume da música atual ao longo de FADE_OUT_MS.
   const startFadeOut = useCallback(() => {
@@ -1052,7 +1212,7 @@ export default function PlayerPage() {
 
   const handlePlayPause = () => {
     if (!started) { handleStart(); return; }
-    if (!audioRef.current) return;
+    const a = getOrCreateAudio();
     if (isBufferingRef.current) {
       toast({
         title: "Conectando áudio...",
@@ -1060,9 +1220,13 @@ export default function PlayerPage() {
       });
       return;
     }
-    if (isPlaying) { audioRef.current.pause(); setIsPlaying(false); }
-    else {
-      audioRef.current.play().catch((err) => {
+    if (isPlaying) {
+      a.pause();
+      setIsPlaying(false);
+      silentKeepaliveRef.current.stop();
+    } else {
+      silentKeepaliveRef.current.start();
+      a.play().catch((err) => {
         console.error("Erro ao retomar áudio:", err);
       });
       setIsPlaying(true);
@@ -1679,6 +1843,43 @@ export default function PlayerPage() {
           >
             <ArrowLeftRight className="w-3.5 h-3.5" />
           </button>
+
+          {/* ── MOBILE: manter tela ligada (opcional) ── */}
+          {wakeLock.isSupported && (
+            <button
+              data-testid="button-wakelock-mobile"
+              type="button"
+              onClick={wakeLock.toggleEnabled}
+              className={`sm:hidden w-7 h-7 rounded border flex items-center justify-center transition-colors cursor-pointer ${
+                wakeLock.enabled
+                  ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.2)]"
+                  : "bg-[var(--dj-bg)] border-[var(--dj-border)] text-[var(--dj-muted)] hover:text-[var(--dj-text)]"
+              }`}
+              title={wakeLock.enabled ? "Manter tela ligada: Ativado (toque para desligar)" : "Manter tela ligada: Desativado (toque para ativar)"}
+              aria-label="Alternar manter tela ligada"
+            >
+              {wakeLock.enabled ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <SunDim className="w-3.5 h-3.5" />}
+            </button>
+          )}
+
+          {/* ── DESKTOP: manter tela ligada (opcional) ── */}
+          {wakeLock.isSupported && (
+            <button
+              data-testid="button-wakelock-desktop"
+              type="button"
+              onClick={wakeLock.toggleEnabled}
+              className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider border transition-all cursor-pointer ${
+                wakeLock.enabled
+                  ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.2)]"
+                  : "bg-[var(--dj-bg)] border-[var(--dj-border)] text-[var(--dj-muted)] hover:text-[var(--dj-text)]"
+              }`}
+              title={wakeLock.enabled ? "Manter tela ligada: Ativado (a tela do dispositivo não apagará sozinha)" : "Manter tela ligada: Desativado (o display apagará conforme o timeout do sistema)"}
+              aria-label="Alternar manter tela ligada"
+            >
+              {wakeLock.enabled ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <SunDim className="w-3.5 h-3.5" />}
+              <span>Tela {wakeLock.enabled ? "Ativa" : "Normal"}</span>
+            </button>
+          )}
 
           {/* ── DESKTOP: instalar app (com texto) ── */}
           {pwa.installed ? (
