@@ -18,7 +18,60 @@ import { useWakeLock } from "@/hooks/useWakeLock";
 import { APP_VERSION, isDev, APP_DEV_VERSION, APP_PROD_VERSION } from "@/components/Layout";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
+import { TimeLabel, RemainingLabel, ProgressSlider, VuMeter } from "@/components/PlayerClock";
 import "@/styles/dj-console.css";
+
+/**
+ * Pré-carregamento de faixas: baixa o arquivo inteiro enquanto a faixa atual
+ * toca e guarda como blob local. Quando a música termina, a próxima começa
+ * instantaneamente da memória — sem rede e sem silêncio na troca, que é o
+ * momento em que o celular com a tela apagada suspende a página.
+ */
+const PREFETCH_CACHE_LIMIT = 3;
+const prefetchCache = new Map<string, string>(); // url original -> blob: URL
+const prefetchInFlight = new Map<string, Promise<string | null>>();
+
+function getPrefetchedSrc(url: string): string {
+  const blobUrl = prefetchCache.get(url);
+  if (!blobUrl) return url;
+  // Marca como usada recentemente (LRU)
+  prefetchCache.delete(url);
+  prefetchCache.set(url, blobUrl);
+  return blobUrl;
+}
+
+function prefetchTrack(url: string | undefined, protectedSrc?: string): Promise<string | null> {
+  if (!url || !/^https?:\/\//.test(url)) return Promise.resolve(null);
+  if (prefetchCache.has(url)) return Promise.resolve(prefetchCache.get(url)!);
+  const existing = prefetchInFlight.get(url);
+  if (existing) return existing;
+
+  const job = fetch(url, { mode: "cors", credentials: "omit" })
+    .then((res) => (res.ok ? res.blob() : null))
+    .then((blob) => {
+      if (!blob || blob.size === 0) return null;
+      const blobUrl = URL.createObjectURL(blob);
+      prefetchCache.set(url, blobUrl);
+      // Mantém no máximo N faixas em memória, sem nunca liberar a que está tocando
+      while (prefetchCache.size > PREFETCH_CACHE_LIMIT) {
+        const oldest = [...prefetchCache.entries()].find(([, b]) => b !== protectedSrc);
+        if (!oldest) break;
+        prefetchCache.delete(oldest[0]);
+        URL.revokeObjectURL(oldest[1]);
+      }
+      return blobUrl;
+    })
+    .catch((err) => {
+      console.warn("[Prefetch] Falha ao pré-carregar faixa (usará streaming):", err);
+      return null;
+    })
+    .finally(() => {
+      prefetchInFlight.delete(url);
+    });
+
+  prefetchInFlight.set(url, job);
+  return job;
+}
 
 function shuffleArray<T>(array: T[]): T[] {
   const arr = [...array];
@@ -169,7 +222,7 @@ export default function PlayerPage() {
   const [shuffleCycle, setShuffleCycle] = useState(0);
   // Regra de negócio: O sistema deve sempre iniciar com a opção Exibição Aleatória ativada
   const [shuffleOverride, setShuffleOverride] = useState<boolean | null>(true);
-  const [currentTime, setCurrentTime] = useState(0);
+  // O tempo atual da faixa NÃO fica no estado da página (ver components/PlayerClock).
   const [duration, setDuration] = useState(0);
   const [iosHintOpen, setIosHintOpen] = useState(false);
   const pwa = usePwaInstall();
@@ -206,27 +259,43 @@ export default function PlayerPage() {
   const hasEndedHandledRef = useRef(false);
   const triggerAudioClockHeartbeatRef = useRef<() => void>(() => {});
   const resumeOrAdvanceRef = useRef<() => void>(() => {});
+  /** URL original (não-blob) da faixa carregada no elemento de áudio */
+  const loadedTrackUrlRef = useRef<string>("");
+
+  // Informa ao sistema (tela de bloqueio) a posição da faixa. O próprio SO
+  // extrapola o avanço a partir do playbackRate, então basta chamar em eventos.
+  const syncPositionState = useCallback((a: HTMLAudioElement) => {
+    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
+    if (!("setPositionState" in navigator.mediaSession)) return;
+    if (!Number.isFinite(a.duration) || a.duration <= 0) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration: a.duration,
+        playbackRate: a.playbackRate || 1,
+        position: Math.max(0, Math.min(a.duration, a.currentTime || 0)),
+      });
+    } catch { /* ignore */ }
+  }, []);
 
   const getOrCreateAudio = useCallback((): HTMLAudioElement => {
     if (!audioRef.current) {
       const audio = new Audio();
       audio.preload = "auto";
 
+      // Leve: nenhum setState por tick — só libera o indicador de buffer e o heartbeat.
       audio.addEventListener("timeupdate", () => {
-        if (Number.isFinite(audio.currentTime)) {
-          setCurrentTime(audio.currentTime);
-          if (audio.currentTime > 0.1 && isBufferingRef.current) {
-            setIsBuffering(false);
-            isBufferingRef.current = false;
-          }
-          triggerAudioClockHeartbeatRef.current();
+        if (audio.currentTime > 0.1 && isBufferingRef.current) {
+          setIsBuffering(false);
+          isBufferingRef.current = false;
         }
+        triggerAudioClockHeartbeatRef.current();
       });
 
       audio.addEventListener("loadedmetadata", () => {
         if (Number.isFinite(audio.duration) && audio.duration > 0) {
           setDuration(audio.duration);
         }
+        syncPositionState(audio);
       });
 
       audio.addEventListener("playing", () => {
@@ -237,7 +306,10 @@ export default function PlayerPage() {
         if ("mediaSession" in navigator) {
           navigator.mediaSession.playbackState = "playing";
         }
+        syncPositionState(audio);
       });
+
+      audio.addEventListener("seeked", () => syncPositionState(audio));
 
       audio.addEventListener("waiting", () => {
         setIsBuffering(true);
@@ -261,13 +333,16 @@ export default function PlayerPage() {
       audio.addEventListener("error", () => {
         setIsBuffering(false);
         isBufferingRef.current = false;
+        // Ignora o "erro" gerado ao esvaziar a fonte de propósito (troca de playlist)
+        if (!audio.getAttribute("src")) return;
         onTrackErrorRef.current();
       });
 
       audioRef.current = audio;
     }
     return audioRef.current;
-  }, []);
+  }, [syncPositionState]);
+
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
@@ -794,7 +869,7 @@ export default function PlayerPage() {
           navigator.mediaSession.setActionHandler("seekto", (details) => {
             if (details.seekTime !== undefined && audioRef.current) {
               audioRef.current.currentTime = details.seekTime;
-              setCurrentTime(details.seekTime);
+              syncPositionState(audioRef.current);
             }
           });
         } catch {}
@@ -802,43 +877,8 @@ export default function PlayerPage() {
         console.warn("[MediaSession] Falha ao registrar action handlers:", e);
       }
     },
-    [queue?.clientName, getOrCreateAudio]
+    [queue?.clientName, getOrCreateAudio, syncPositionState]
   );
-
-  // Sincroniza estado de posição no lock screen nativo
-  useEffect(() => {
-    if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
-    if (!("setPositionState" in navigator.mediaSession)) return;
-    if (!duration || duration <= 0) return;
-    try {
-      navigator.mediaSession.setPositionState({
-        duration: duration,
-        playbackRate: 1,
-        position: Math.max(0, Math.min(duration, currentTime)),
-      });
-    } catch {}
-  }, [duration, Math.floor(currentTime)]);
-
-  // Sincronizador contínuo de progresso (a cada 250ms enquanto tocando)
-  // Garante que barra e contador avancem continuamente
-  useEffect(() => {
-    if (!isPlaying) return;
-    const ticker = setInterval(() => {
-      const a = audioRef.current;
-      if (a && !a.paused && Number.isFinite(a.currentTime)) {
-        setCurrentTime(a.currentTime);
-        if (Number.isFinite(a.duration) && a.duration > 0) {
-          setDuration(a.duration);
-        }
-        if (a.currentTime > 0.1 && isBufferingRef.current) {
-          setIsBuffering(false);
-          isBufferingRef.current = false;
-        }
-      }
-    }, 250);
-
-    return () => clearInterval(ticker);
-  }, [isPlaying]);
 
   // Sincroniza áudio e heartbeat ao retornar à aba (desbloqueio do celular)
   useEffect(() => {
@@ -846,9 +886,6 @@ export default function PlayerPage() {
       if (document.visibilityState === "visible") {
         const a = audioRef.current;
         if (a) {
-          if (Number.isFinite(a.currentTime)) {
-            setCurrentTime(a.currentTime);
-          }
           if (Number.isFinite(a.duration) && a.duration > 0) {
             setDuration(a.duration);
           }
@@ -926,11 +963,12 @@ export default function PlayerPage() {
     const vol = effectiveVolume(track.type);
     audio.volume = vol;
     audio.muted = muted || vol <= 0.001;
-    setCurrentTime(resumeAt);
     setDuration(track.duration && Number.isFinite(track.duration) && track.duration > 0 ? track.duration : 0);
 
-    if (audio.src !== track.url) {
-      audio.src = track.url;
+    const actualSrc = getPrefetchedSrc(track.url);
+    if (loadedTrackUrlRef.current !== track.url || audio.src !== actualSrc) {
+      loadedTrackUrlRef.current = track.url;
+      audio.src = actualSrc;
       audio.load();
     }
 
@@ -954,6 +992,13 @@ export default function PlayerPage() {
 
     setIsPlaying(true);
     isPlayingRef.current = true;
+
+    // Pré-carrega a PRÓXIMA faixa enquanto a atual toca
+    const nextIdx = (idx + 1) % items.length;
+    const nextTrack = items[nextIdx];
+    if (nextTrack?.url && nextTrack.url !== track.url) {
+      prefetchTrack(nextTrack.url, audio.src);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uuid, email, effectiveVolume, getOrCreateAudio, logPlayback, muted, updateMediaSession]);
 
@@ -1004,11 +1049,12 @@ export default function PlayerPage() {
     const vol = effectiveVolume(jingle.type || "voiceover");
     audio.volume = vol;
     audio.muted = muted || vol <= 0.001;
-    setCurrentTime(0);
     setDuration(jingle.duration && Number.isFinite(jingle.duration) && jingle.duration > 0 ? jingle.duration : 0);
 
-    if (audio.src !== jingle.url) {
-      audio.src = jingle.url;
+    const actualSrc = getPrefetchedSrc(jingle.url);
+    if (loadedTrackUrlRef.current !== jingle.url || audio.src !== actualSrc) {
+      loadedTrackUrlRef.current = jingle.url;
+      audio.src = actualSrc;
       audio.load();
     }
 
@@ -1181,16 +1227,7 @@ export default function PlayerPage() {
     const a = audioRef.current;
     if (a && Number.isFinite(a.duration) && a.duration > 0) {
       a.currentTime = Math.max(0, Math.min(a.duration, value));
-      setCurrentTime(a.currentTime);
-      if ("mediaSession" in navigator && "setPositionState" in navigator.mediaSession) {
-        try {
-          navigator.mediaSession.setPositionState({
-            duration: a.duration,
-            playbackRate: 1,
-            position: a.currentTime,
-          });
-        } catch {}
-      }
+      syncPositionState(a);
     }
   };
 
@@ -2013,12 +2050,12 @@ export default function PlayerPage() {
               {/* Time */}
               <div className="flex items-center gap-1 flex-none">
                 {isBuffering && <Loader2 className="w-2.5 h-2.5 text-amber-400 animate-spin" />}
-                <span className="text-[11px] dj-mono text-[var(--dj-muted)]">{fmtMMSS(currentTime)} / {fmtMMSS(duration)}</span>
+                <TimeLabel audioRef={audioRef} duration={duration} className="text-[11px] dj-mono text-[var(--dj-muted)]" />
               </div>
             </div>
             {/* Progress bar */}
             <div className="px-3 pb-2">
-              <input data-testid="slider-progress" type="range" min={0} max={duration || 1} step={0.01} value={currentTime} disabled={!duration} onChange={(e) => handleSeek(parseFloat(e.target.value))} aria-label="Posição da faixa" className="dj-progress" />
+              <ProgressSlider audioRef={audioRef} duration={duration} onSeek={handleSeek} />
             </div>
           </div>
 
@@ -2036,7 +2073,7 @@ export default function PlayerPage() {
                   <span>Status de Reprodução</span>
                 )}
               </span>
-              <span className="dj-mono text-[var(--dj-cyan)]">{fmtMMSS(currentTime)} / {fmtMMSS(duration)}</span>
+              <TimeLabel audioRef={audioRef} duration={duration} className="dj-mono text-[var(--dj-cyan)]" />
             </h2>
             <div className="flex-1 flex flex-col items-center justify-center text-center px-2 min-h-0">
               <div className="w-44 h-44 rounded-full bg-[#0a0f1a] border-4 border-[var(--dj-border)] shadow-[0_0_40px_rgba(0,240,255,0.1)] flex items-center justify-center mb-5 relative overflow-hidden flex-none">
@@ -2069,22 +2106,9 @@ export default function PlayerPage() {
               )}
             </div>
             <div className="mt-4 flex-none">
-              <input data-testid="slider-progress" type="range" min={0} max={duration || 1} step={0.01} value={currentTime} disabled={!duration} onChange={(e) => handleSeek(parseFloat(e.target.value))} aria-label="Posição da faixa" className="dj-progress" />
+              <ProgressSlider audioRef={audioRef} duration={duration} onSeek={handleSeek} />
             </div>
-            <div className="h-12 mt-3 flex items-end gap-[2px] w-full opacity-80 flex-none">
-              {Array.from({ length: 40 }).map((_, i) => {
-                const ratio = duration > 0 ? currentTime / duration : 0;
-                const isActive = i / 40 < ratio;
-                const height = 20 + Math.sin(i * 0.5) * 15 + (i * 7 % 17);
-                const activeColor =
-                  currentItem?.type === "jingle"
-                    ? "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]"
-                    : currentItem?.type === "voiceover"
-                    ? "bg-[var(--dj-magenta)] shadow-[0_0_8px_var(--dj-magenta)]"
-                    : "bg-[var(--dj-cyan)] shadow-[0_0_8px_var(--dj-cyan)]";
-                return <div key={i} className={`flex-1 rounded-t-sm transition-colors duration-200 ${isActive ? activeColor : "bg-[var(--dj-accent)]"} ${isPlaying && isActive ? `dj-vu-bar dj-vu-${(i % 12) + 1}` : ""}`} style={{ height: `${height}%` }} />;
-              })}
-            </div>
+            <VuMeter audioRef={audioRef} duration={duration} isPlaying={isPlaying} itemType={currentItem?.type} />
           </div>
 
           {/* Transport Controls */}
@@ -2291,9 +2315,13 @@ export default function PlayerPage() {
                         </p>
                       </div>
                       <div className="text-[10px] dj-mono text-[var(--dj-muted)] flex-none">
-                        {isCurrent && duration > 0
-                          ? `-${fmtMMSS(Math.max(0, duration - currentTime))}`
-                          : item.duration ? fmtMMSS(item.duration) : "—"}
+                        {isCurrent && duration > 0 ? (
+                          <RemainingLabel audioRef={audioRef} duration={duration} />
+                        ) : item.duration ? (
+                          fmtMMSS(item.duration)
+                        ) : (
+                          "—"
+                        )}
                       </div>
                     </div>
                   );

@@ -5,9 +5,7 @@ export function useWakeLock(isPlaying: boolean) {
   const [enabled, setEnabled] = useState(() => {
     if (typeof window === "undefined") return false;
     const saved = localStorage.getItem("radio_indoor_wakelock_enabled");
-    if (saved !== null) return saved === "true";
-    // Em dispositivos móveis (Android, iPhone, iPad), default ativo para manter a rádio tocando continuamente
-    return typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    return saved !== null ? saved === "true" : false;
   });
   const [isActive, setIsActive] = useState(false);
   const sentinelRef = useRef<any>(null);
